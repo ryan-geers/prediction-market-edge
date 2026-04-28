@@ -34,8 +34,8 @@ Optional until you trust email:
 
 ## Schedules
 
-- [ ] `run-pipeline.yml` cron meets your desired refresh (default: every 6h UTC).
-- [ ] `weekly-summary-email.yml` cron meets your digest cadence (default: Monday 13:00 UTC).
+- [ ] `run-pipeline.yml` cron meets your desired refresh (default: **05, 11, 17, 23** UTC daily ≈ midnight / 06 / 12 / 18 America/Chicago in **CDT**; ~1h earlier in each slot in **CST**).
+- [ ] `weekly-summary-email.yml` cron meets your digest cadence (default: Saturday 13:00 UTC ≈ 08:00 America/Chicago in **CDT**; ≈ 07:00 in **CST**).
 
 ## Weekly job behavior
 

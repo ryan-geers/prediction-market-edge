@@ -30,6 +30,7 @@ src/pipeline/paper_trading.py
 src/pipeline/parquet_archive.py
 src/pipeline/reporting.py
 src/pipeline/run.py
+src/pipeline/state_check.py
 src/theses/__init__.py
 src/theses/base.py
 src/theses/registry.py
@@ -53,5 +54,6 @@ tests/test_http_client.py
 tests/test_paper_trading.py
 tests/test_parquet_archive.py
 tests/test_pipeline_smoke.py
+tests/test_state_check.py
 tests/test_storage_integrity.py
 tests/test_workflows_yaml.py

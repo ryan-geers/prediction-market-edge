@@ -12,7 +12,8 @@ on:
         type: boolean
         default: false
   schedule:
-    - cron: "0 13 * * 1"
+    # UTC-only (GitHub). Day 6 = Saturday. 13:00 UTC ≈ 08:00 America/Chicago in CDT; ≈ 07:00 in CST.
+    - cron: "0 13 * * 6"
 
 # Produces Markdown + HTML digests, uploads artifacts, and optionally emails the Markdown body.
 # Dry-run: manual workflow_dispatch, or repo variable PME_EMAIL_DRY_RUN=true.

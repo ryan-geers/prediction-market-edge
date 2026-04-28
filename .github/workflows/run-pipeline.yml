@@ -3,7 +3,9 @@ name: Run Pipeline
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 */6 * * *"
+    # UTC-only (GitHub). Anchored to America/Chicago during daylight (CDT): 00:00 / 06:00 / 12:00 / 18:00 local.
+    # In standard time (CST) the same UTC instants fall ~07:00 / 13:00 / 19:00 / ~01:00 local (one-hour shift).
+    - cron: "0 5,11,17,23 * * *"
 
 # Shared pipeline logic with local: `pme run` then report helpers; artifacts restore/persist state on ephemeral runners.
 jobs:

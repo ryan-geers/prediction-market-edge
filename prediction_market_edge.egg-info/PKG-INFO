@@ -42,6 +42,18 @@ Polyglot monorepo for identifying pricing inefficiencies in prediction markets.
    - `pme run`
 4. Open the dashboard locally:
    - `streamlit run src/dashboard/streamlit_app.py`
+5. Run tests and optional linting:
+   - `pytest`
+   - `pme check-state` — verify DuckDB + recent `run_manifest` (weekly CI uses `--max-run-age-days 7`)
+   - `ruff check src tests` (optional)
+   - After changing Pydantic models in `src/core/schemas.py`: `python scripts/export_contract_schemas.py` and commit `contracts/json/`.
+
+## Documentation
+
+- **[PREFLIGHT_CHECKLIST.md](docs/PREFLIGHT_CHECKLIST.md)** — secrets, first run, schedules, before going live.
+- **[CONTRIBUTING.md](docs/CONTRIBUTING.md)** — adding a thesis module, contracts, dev commands.
+- **[OPERATIONS.md](docs/OPERATIONS.md)** — GitHub Actions, secrets, artifacts, scheduling, email dry-run.
+- **[PYTHON_VS_JAVA.md](docs/PYTHON_VS_JAVA.md)** — when logic stays in Python vs the Java scaffold.
 
 ## Repository Layout
 
@@ -52,7 +64,9 @@ Polyglot monorepo for identifying pricing inefficiencies in prediction markets.
 - `src/cli`: command entrypoints
 - `src/dashboard`: local Streamlit app
 - `.github/workflows`: scheduled/manual execution and weekly digest
-- `contracts`: cross-runtime contracts and schema docs
+- `contracts`: JSON Schemas in **`contracts/json/`** for cross-runtime use (regenerate via `scripts/export_contract_schemas.py`)
+- `docs`: contributor and operations guides
+- `scripts`: maintenance utilities (schema export)
 - `services-java`: optional Java service scaffold
 
 ## Current Notes
