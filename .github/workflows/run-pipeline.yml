@@ -49,6 +49,9 @@ jobs:
         run: |
           pme paper-report --output data/reports/paper_trading_latest.md
 
+      - name: Prune old run_report archives
+        run: pme prune-reports --dir data/reports --keep 48
+
       - name: Upload state artifact
         uses: actions/upload-artifact@v4
         with:

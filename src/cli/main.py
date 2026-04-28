@@ -9,6 +9,7 @@ from src.pipeline.reporting import (
     generate_weekly_digest_html,
 )
 from src.pipeline.run import run_backfill, run_pipeline
+from src.pipeline.report_prune import prune_run_reports
 from src.pipeline.state_check import check_state_freshness
 
 
@@ -42,6 +43,23 @@ def main() -> None:
     paper_report_parser = sub.add_parser("paper-report", help="Generate paper trading report from DuckDB")
     paper_report_parser.add_argument("--run-id", default=None, help="Filter to a single run_id, or omit for all")
     paper_report_parser.add_argument("--output", default="data/reports/paper_trading_report.md")
+
+    prune_reports_parser = sub.add_parser(
+        "prune-reports",
+        help="Delete older run_report_<uuid>.{md,html} files (keeps artifact size bounded in CI)",
+    )
+    prune_reports_parser.add_argument(
+        "--dir",
+        type=Path,
+        default=Path("data/reports"),
+        help="Reports directory (default: data/reports)",
+    )
+    prune_reports_parser.add_argument(
+        "--keep",
+        type=int,
+        default=48,
+        help="Keep the newest N per-run Markdown reports by mtime (default: 48)",
+    )
 
     check_parser = sub.add_parser(
         "check-state",
@@ -94,6 +112,9 @@ def main() -> None:
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(text)
         print(f"paper_report_path={output}")
+    elif args.command == "prune-reports":
+        kept, removed = prune_run_reports(args.dir, keep=args.keep)
+        print(f"prune-reports: kept={kept} removed_pairs={removed} dir={args.dir.resolve()}")
     elif args.command == "check-state":
         settings = get_settings()
         db = args.duckdb if args.duckdb is not None else settings.duckdb_path

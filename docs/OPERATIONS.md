@@ -32,12 +32,28 @@ After restoring `pme-state`, the weekly workflow runs `pme check-state --max-run
 - **`pme-state`**: `data/pme.duckdb`, `data/reports` — continuity across ephemeral runners.
 - **`pme-weekly-digest`**: `weekly_digest.md`, `weekly_digest.html` — audit trail and email source.
 
-Retention defaults to GitHub’s policy unless you set `retention-days` on upload steps (already set on pipeline state where applicable).
+Retention defaults to GitHub’s policy unless you set `retention-days` on upload steps (**`pme-state`** uploads use **30 days** in `run-pipeline.yml`).
+
+## How state persists in CI (no PR required)
+
+Runners are ephemeral. Each **Run Pipeline** job:
+
+1. **Downloads** the latest **`pme-state`** artifact into `data/` (DuckDB + `data/reports`).
+2. Runs **`pme run`**, which **appends** new rows to `pme.duckdb` and writes new `run_report_<run_id>.md` / `.html`.
+3. **Uploads** the whole `data/pme.duckdb` and `data/reports` tree again as **`pme-state`**.
+
+So the **source of truth** for history is **`pme.duckdb`** inside the artifact; Markdown files are human-readable mirrors. You do not need commits or PRs for the pipeline to accumulate state.
+
+**Optional:** open a PR each run (e.g. commit `data/` to a branch with a **PAT**). That duplicates what artifacts already do—useful only if you want **git diffs** or a public static site; otherwise artifacts + DuckDB are simpler.
+
+## Run report file growth
+
+Each run adds `run_report_<uuid>.{md,html}`. The workflow runs **`pme prune-reports --keep 48`** before upload so long CI history does not grow the artifact without bound. Older per-run files are dropped from the bundle; **closed-trade and signal history remain in DuckDB**. To change retention, edit `--keep` in `run-pipeline.yml`.
 
 ## Local recovery
 
 1. Download latest `pme-state` from Actions.
-2. Extract under `prediction-market-edge/data/` preserving `pme.duckdb` and `reports/`.
+2. Extract under your project’s `data/` preserving `pme.duckdb` and `reports/`.
 3. Run `pme weekly-digest` / `streamlit run src/dashboard/streamlit_app.py` as needed.
 
 ## Scheduling
