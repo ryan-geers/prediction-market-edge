@@ -29,6 +29,22 @@ def _no_mark_value(yes_mid: float) -> float:
     return 1.0 - yes_mid
 
 
+def _position_qty(fill_price: float, settings: "Settings") -> float:
+    """
+    Derive contract quantity from bankroll and position-size percentage.
+    budget = bankroll * position_size_pct (e.g. $500 * 5% = $25)
+    qty    = budget / fill_price          (e.g. $25 / $0.50 = 50 contracts)
+    Falls back to paper_default_qty if fill_price is zero or either setting is unset.
+    """
+    try:
+        budget = float(settings.paper_bankroll) * float(settings.paper_position_size_pct)
+        if fill_price > 0 and budget > 0:
+            return budget / fill_price
+    except (TypeError, ValueError, ZeroDivisionError):
+        pass
+    return float(settings.paper_default_qty)
+
+
 def simulate_paper_trades(
     signals: list[SignalRecord],
     settings: Settings,
@@ -43,7 +59,6 @@ def simulate_paper_trades(
     now = utc_now()
     slippage = float(settings.paper_slippage_bps)
     fees = float(settings.paper_fees_assumption_bps)
-    qty = float(settings.paper_default_qty)
     assumption = settings.paper_assumption_version
     fill_rule = settings.paper_fill_rule
     slippage_model = settings.paper_slippage_model_name
@@ -60,6 +75,8 @@ def simulate_paper_trades(
             raw_fill = _apply_slippage_to_yes_ask(signal.ask_price, slippage)
         else:
             raw_fill = _apply_slippage_to_no_ask(signal.bid_price, slippage)
+
+        qty = _position_qty(raw_fill, settings)
 
         fee_paid = raw_fill * (fees / 10000.0) * qty
         effective_entry = raw_fill

@@ -11,7 +11,9 @@ class Settings(BaseSettings):
     duckdb_path: Path = Path("data/pme.duckdb")
     edge_threshold_bps: int = 300
 
-    paper_default_qty: float = 1.0
+    paper_default_qty: float = 1.0  # overridden at runtime when paper_bankroll is set
+    paper_bankroll: float = 500.0
+    paper_position_size_pct: float = 0.05  # fraction of bankroll per position (e.g. 0.05 = $25 on $500)
     paper_slippage_bps: float = 25.0
     paper_fees_assumption_bps: float = 0.0
     paper_fill_rule: str = "aggressive_touch"
