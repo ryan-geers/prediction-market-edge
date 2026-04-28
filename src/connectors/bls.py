@@ -5,6 +5,9 @@ from src.connectors.base import Connector
 
 LOGGER = logging.getLogger(__name__)
 
+# BLS API uses '.' and '-' strings for unavailable or suppressed observations.
+_MISSING_OBSERVATION = frozenset({"", ".", "-"})
+
 
 class BlsConnector(Connector):
     BASE_URL = "https://api.bls.gov/publicAPI/v2/timeseries/data/"
@@ -50,6 +53,23 @@ class BlsConnector(Connector):
             ]
 
     @staticmethod
+    def _parse_observation_float(value: Any) -> float | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            s = value.strip()
+            if s in _MISSING_OBSERVATION:
+                return None
+            try:
+                return float(s)
+            except ValueError:
+                return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
     def parse_response(data: dict[str, Any]) -> list[dict[str, Any]]:
         series = data.get("Results", {}).get("series", [])
         if not series:
@@ -58,13 +78,13 @@ class BlsConnector(Connector):
         if not points:
             return []
         latest = points[0]
-        value = latest.get("value")
-        if value in (None, "", "."):
+        parsed = BlsConnector._parse_observation_float(latest.get("value"))
+        if parsed is None:
             return []
         return [
             {
                 "series": series[0].get("seriesID", "LNS14000000"),
-                "value": float(value),
+                "value": parsed,
                 "year": latest.get("year"),
                 "period": latest.get("periodName"),
             }
@@ -99,12 +119,13 @@ class BlsConnector(Connector):
                 month = str(period).replace("M", "").zfill(2)
             elif point.get("periodName") in month_map:
                 month = month_map[str(point.get("periodName"))]
-            if value in (None, "", ".") or month is None:
+            parsed = BlsConnector._parse_observation_float(value)
+            if parsed is None or month is None:
                 continue
             rows.append(
                 {
                     "series": series[0].get("seriesID", "LNS14000000"),
-                    "value": float(value),
+                    "value": parsed,
                     "date": f"{point.get('year')}-{month}-01",
                 }
             )

@@ -58,6 +58,26 @@ def test_bls_parse_history_fixture():
     assert rows[0]["date"] == "2026-03-01"
 
 
+def test_bls_parse_history_skips_dash_values():
+    data = {
+        "Results": {
+            "series": [
+                {
+                    "seriesID": "LNS14000000",
+                    "data": [
+                        {"year": "2025", "period": "M01", "value": "-"},
+                        {"year": "2025", "period": "M02", "value": "4.1"},
+                    ],
+                }
+            ]
+        }
+    }
+    rows = BlsConnector.parse_history_response(data)
+    assert len(rows) == 1
+    assert rows[0]["date"] == "2025-02-01"
+    assert rows[0]["value"] == 4.1
+
+
 def test_bea_parse_fixture():
     rows = BeaConnector.parse_response(_load_json("bea_response.json"))
     assert rows[0]["series"] == "PCEPI"
