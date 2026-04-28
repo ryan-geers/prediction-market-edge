@@ -1,0 +1,20 @@
+[
+  {
+    "id": "1",
+    "conditionId": "pm-abc",
+    "question": "Will CPI exceed 0.3%?",
+    "bestBid": "0.41",
+    "bestAsk": "0.46",
+    "lastTradePrice": "0.44",
+    "closed": false
+  },
+  {
+    "id": "2",
+    "conditionId": "pm-closed",
+    "question": "Closed market",
+    "bestBid": "0.10",
+    "bestAsk": "0.20",
+    "lastTradePrice": "0.15",
+    "closed": true
+  }
+]

@@ -1,0 +1,51 @@
+{
+  "properties": {
+    "active_thesis": {
+      "title": "Active Thesis",
+      "type": "string"
+    },
+    "code_commit_sha": {
+      "title": "Code Commit Sha",
+      "type": "string"
+    },
+    "completed_at_utc": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Completed At Utc"
+    },
+    "config_hash": {
+      "title": "Config Hash",
+      "type": "string"
+    },
+    "data_sources": {
+      "title": "Data Sources",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "started_at_utc": {
+      "format": "date-time",
+      "title": "Started At Utc",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "code_commit_sha",
+    "config_hash",
+    "active_thesis",
+    "data_sources"
+  ],
+  "title": "RunManifest",
+  "type": "object"
+}

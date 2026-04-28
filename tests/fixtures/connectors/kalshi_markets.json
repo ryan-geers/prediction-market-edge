@@ -1,0 +1,19 @@
+{
+  "markets": [
+    {
+      "ticker": "CPI-MAY-OVER-03",
+      "title": "May CPI over 0.3%",
+      "yes_bid": 44,
+      "yes_ask": 48,
+      "last_price": 46,
+      "status": "open"
+    },
+    {
+      "ticker": "CPI-OLD",
+      "title": "Old market",
+      "yes_bid": 10,
+      "yes_ask": 20,
+      "status": "closed"
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+name: Run Pipeline
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"
+
+# Shared pipeline logic with local: `pme run` then report helpers; artifacts restore/persist state on ephemeral runners.
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+      BLS_API_KEY: ${{ secrets.BLS_API_KEY }}
+      BEA_API_KEY: ${{ secrets.BEA_API_KEY }}
+      KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Restore prior data artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pme-state
+          path: data
+        continue-on-error: true
+
+      - name: Run pipeline
+        run: |
+          pme run --thesis economic_indicators
+
+      - name: Generate weekly digest snapshot
+        run: |
+          pme weekly-digest --output data/reports/weekly_digest_latest.md
+
+      - name: Paper trading report
+        run: |
+          pme paper-report --output data/reports/paper_trading_latest.md
+
+      - name: Upload state artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pme-state
+          path: |
+            data/pme.duckdb
+            data/reports
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Write run summary
+        run: |
+          {
+            echo "## Prediction Market Edge Run"
+            ls -la data/reports
+            if [ -f data/reports/weekly_digest_latest.md ]; then
+              head -n 40 data/reports/weekly_digest_latest.md
+            fi
+          } >> "$GITHUB_STEP_SUMMARY" 2>&1 || true

@@ -1,0 +1,80 @@
+Metadata-Version: 2.4
+Name: prediction-market-edge
+Version: 0.1.0
+Summary: Prediction market research and signal generation platform.
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: pydantic>=2.7.0
+Requires-Dist: pydantic-settings>=2.2.1
+Requires-Dist: requests>=2.32.3
+Requires-Dist: duckdb>=1.0.0
+Requires-Dist: pandas>=2.2.2
+Requires-Dist: streamlit>=1.44.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.2.0; extra == "dev"
+Requires-Dist: ruff>=0.5.0; extra == "dev"
+Requires-Dist: jsonschema>=4.22.0; extra == "dev"
+Requires-Dist: PyYAML>=6.0.0; extra == "dev"
+
+# Prediction Market Edge
+
+Polyglot monorepo for identifying pricing inefficiencies in prediction markets.
+
+## V1 Scope
+
+- Python-first quant pipeline
+- Economic indicators thesis implemented end-to-end first
+- Shared thesis plugin interface for future modules
+- Paper-trading ledger with reproducible run metadata
+- GitHub Actions scheduled/manual execution (no always-on hosting)
+- Weekly email summary workflow
+- Optional local Streamlit dashboard
+
+## Quick Start
+
+1. Create a virtual environment and install dependencies:
+   - `python -m venv .venv`
+   - `source .venv/bin/activate`
+   - `pip install -e ".[dev]"`
+2. Copy environment template:
+   - `cp .env.example .env`
+3. Run a local pipeline execution:
+   - `pme run`
+4. Open the dashboard locally:
+   - `streamlit run src/dashboard/streamlit_app.py`
+
+## Repository Layout
+
+- `src/core`: config, logging, http utils, schemas, storage
+- `src/connectors`: market/data connectors
+- `src/theses`: thesis modules and plugin contracts
+- `src/pipeline`: orchestration logic
+- `src/cli`: command entrypoints
+- `src/dashboard`: local Streamlit app
+- `.github/workflows`: scheduled/manual execution and weekly digest
+- `contracts`: cross-runtime contracts and schema docs
+- `services-java`: optional Java service scaffold
+
+## Current Notes
+
+- Market/data connectors currently include safe starter implementations and placeholders for API integration.
+- Weekly email workflow expects SMTP secrets configured in GitHub repository settings.
+- Runtime data files under `data/` should not be committed.
+
+## Reporting and weekly email (Phase 6)
+
+- Each `pme run` writes **`data/reports/run_report_<run_id>.md`** and a sibling **`.html`** summary.
+- Generate a rolling 7-day digest (Markdown + optional HTML):
+
+  ```bash
+  pme weekly-digest --output data/reports/weekly_digest.md --html-output data/reports/weekly_digest.html
+  ```
+
+- Send the Markdown file over SMTP (reads `.env` or process env; **no send** if `EMAIL_DRY_RUN=true` or you pass `--dry-run`):
+
+  ```bash
+  pme send-weekly-email --markdown-file data/reports/weekly_digest.md
+  pme send-weekly-email --markdown-file data/reports/weekly_digest.md --dry-run
+  ```
+
+- **GitHub Actions:** workflow [Weekly Summary Email](.github/workflows/weekly-summary-email.yml) restores `pme-state`, generates both formats, uploads artifact `pme-weekly-digest`, and emails unless dry-run. Set repository **secrets**: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_FROM`, `EMAIL_TO`. To force dry-run on scheduled runs, set repository **variable** `PME_EMAIL_DRY_RUN` to `true`, or enable **Dry run** on manual `workflow_dispatch`.

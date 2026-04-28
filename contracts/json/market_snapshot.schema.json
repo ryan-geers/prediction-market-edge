@@ -1,0 +1,76 @@
+{
+  "properties": {
+    "best_ask": {
+      "title": "Best Ask",
+      "type": "number"
+    },
+    "best_bid": {
+      "title": "Best Bid",
+      "type": "number"
+    },
+    "contract_id": {
+      "title": "Contract Id",
+      "type": "string"
+    },
+    "last_trade": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Last Trade"
+    },
+    "mid_price": {
+      "title": "Mid Price",
+      "type": "number"
+    },
+    "orderbook_depth_json": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Orderbook Depth Json"
+    },
+    "snapshot_id": {
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "snapshot_time_utc": {
+      "format": "date-time",
+      "title": "Snapshot Time Utc",
+      "type": "string"
+    },
+    "source_latency_ms": {
+      "default": 0,
+      "title": "Source Latency Ms",
+      "type": "integer"
+    },
+    "spread_bps": {
+      "title": "Spread Bps",
+      "type": "number"
+    },
+    "venue": {
+      "title": "Venue",
+      "type": "string"
+    }
+  },
+  "required": [
+    "venue",
+    "contract_id",
+    "best_bid",
+    "best_ask",
+    "mid_price",
+    "spread_bps"
+  ],
+  "title": "MarketSnapshotRecord",
+  "type": "object"
+}

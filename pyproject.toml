@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prediction-market-edge"
+version = "0.1.0"
+description = "Prediction market research and signal generation platform."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic>=2.7.0",
+  "pydantic-settings>=2.2.1",
+  "requests>=2.32.3",
+  "duckdb>=1.0.0",
+  "pandas>=2.2.2",
+  "streamlit>=1.44.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2.0",
+  "ruff>=0.5.0",
+  "jsonschema>=4.22.0",
+  "PyYAML>=6.0.0",
+]
+
+[project.scripts]
+pme = "src.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["F"]
+ignore = []

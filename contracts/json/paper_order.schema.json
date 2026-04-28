@@ -1,0 +1,150 @@
+{
+  "properties": {
+    "assumption_version": {
+      "default": "paper_exec_v1",
+      "title": "Assumption Version",
+      "type": "string"
+    },
+    "cancelled_at_utc": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cancelled At Utc"
+    },
+    "contract_id": {
+      "title": "Contract Id",
+      "type": "string"
+    },
+    "fees_assumption_bps": {
+      "default": 0.0,
+      "title": "Fees Assumption Bps",
+      "type": "number"
+    },
+    "fill_price": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Fill Price"
+    },
+    "fill_qty": {
+      "default": 0.0,
+      "title": "Fill Qty",
+      "type": "number"
+    },
+    "fill_rule": {
+      "default": "midpoint",
+      "title": "Fill Rule",
+      "type": "string"
+    },
+    "filled_at_utc": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Filled At Utc"
+    },
+    "limit_price": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Limit Price"
+    },
+    "order_type": {
+      "enum": [
+        "market",
+        "limit"
+      ],
+      "title": "Order Type",
+      "type": "string"
+    },
+    "paper_order_id": {
+      "title": "Paper Order Id",
+      "type": "string"
+    },
+    "qty": {
+      "title": "Qty",
+      "type": "number"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "side": {
+      "enum": [
+        "yes",
+        "no"
+      ],
+      "title": "Side",
+      "type": "string"
+    },
+    "signal_id": {
+      "title": "Signal Id",
+      "type": "string"
+    },
+    "slippage_assumption_bps": {
+      "default": 0.0,
+      "title": "Slippage Assumption Bps",
+      "type": "number"
+    },
+    "slippage_model_name": {
+      "default": "linear_bps_on_touch",
+      "title": "Slippage Model Name",
+      "type": "string"
+    },
+    "status": {
+      "default": "submitted",
+      "enum": [
+        "submitted",
+        "filled",
+        "cancelled"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "submitted_at_utc": {
+      "format": "date-time",
+      "title": "Submitted At Utc",
+      "type": "string"
+    },
+    "venue": {
+      "title": "Venue",
+      "type": "string"
+    }
+  },
+  "required": [
+    "signal_id",
+    "run_id",
+    "venue",
+    "contract_id",
+    "side",
+    "order_type",
+    "qty"
+  ],
+  "title": "PaperOrderRecord",
+  "type": "object"
+}

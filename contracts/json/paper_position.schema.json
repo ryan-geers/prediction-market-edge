@@ -1,0 +1,128 @@
+{
+  "properties": {
+    "avg_entry_price": {
+      "title": "Avg Entry Price",
+      "type": "number"
+    },
+    "avg_exit_price": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Avg Exit Price"
+    },
+    "close_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Close Reason"
+    },
+    "closed_at_utc": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Closed At Utc"
+    },
+    "contract_id": {
+      "title": "Contract Id",
+      "type": "string"
+    },
+    "last_mark_time_utc": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Last Mark Time Utc"
+    },
+    "mark_price": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Mark Price"
+    },
+    "net_qty": {
+      "title": "Net Qty",
+      "type": "number"
+    },
+    "opened_at_utc": {
+      "format": "date-time",
+      "title": "Opened At Utc",
+      "type": "string"
+    },
+    "position_id": {
+      "title": "Position Id",
+      "type": "string"
+    },
+    "realized_pnl": {
+      "default": 0.0,
+      "title": "Realized Pnl",
+      "type": "number"
+    },
+    "run_id": {
+      "default": "",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "signal_id": {
+      "default": "",
+      "title": "Signal Id",
+      "type": "string"
+    },
+    "status": {
+      "default": "open",
+      "enum": [
+        "open",
+        "closed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "unrealized_pnl": {
+      "default": 0.0,
+      "title": "Unrealized Pnl",
+      "type": "number"
+    },
+    "venue": {
+      "title": "Venue",
+      "type": "string"
+    }
+  },
+  "required": [
+    "venue",
+    "contract_id",
+    "net_qty",
+    "avg_entry_price"
+  ],
+  "title": "PaperPositionRecord",
+  "type": "object"
+}

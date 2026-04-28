@@ -1,0 +1,16 @@
+{
+  "BEAAPI": {
+    "Results": {
+      "Data": [
+        {
+          "TimePeriod": "2026M02",
+          "DataValue": "123.0"
+        },
+        {
+          "TimePeriod": "2026M03",
+          "DataValue": "123.8"
+        }
+      ]
+    }
+  }
+}

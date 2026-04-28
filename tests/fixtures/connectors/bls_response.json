@@ -1,0 +1,16 @@
+{
+  "Results": {
+    "series": [
+      {
+        "seriesID": "LNS14000000",
+        "data": [
+          {
+            "year": "2026",
+            "periodName": "March",
+            "value": "4.1"
+          }
+        ]
+      }
+    ]
+  }
+}

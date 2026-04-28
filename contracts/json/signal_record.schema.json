@@ -1,0 +1,113 @@
+{
+  "properties": {
+    "ask_price": {
+      "title": "Ask Price",
+      "type": "number"
+    },
+    "assumption_version": {
+      "title": "Assumption Version",
+      "type": "string"
+    },
+    "bid_price": {
+      "title": "Bid Price",
+      "type": "number"
+    },
+    "contract_id": {
+      "title": "Contract Id",
+      "type": "string"
+    },
+    "contract_label": {
+      "title": "Contract Label",
+      "type": "string"
+    },
+    "decision": {
+      "enum": [
+        "enter_long_yes",
+        "enter_long_no",
+        "hold",
+        "reject"
+      ],
+      "title": "Decision",
+      "type": "string"
+    },
+    "decision_reason": {
+      "title": "Decision Reason",
+      "type": "string"
+    },
+    "edge_bps": {
+      "title": "Edge Bps",
+      "type": "number"
+    },
+    "event_time_utc": {
+      "format": "date-time",
+      "title": "Event Time Utc",
+      "type": "string"
+    },
+    "feature_set_version": {
+      "title": "Feature Set Version",
+      "type": "string"
+    },
+    "ingested_at_utc": {
+      "format": "date-time",
+      "title": "Ingested At Utc",
+      "type": "string"
+    },
+    "market_implied_probability": {
+      "title": "Market Implied Probability",
+      "type": "number"
+    },
+    "model_probability": {
+      "title": "Model Probability",
+      "type": "number"
+    },
+    "model_version": {
+      "title": "Model Version",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "signal_id": {
+      "title": "Signal Id",
+      "type": "string"
+    },
+    "spread_bps": {
+      "title": "Spread Bps",
+      "type": "number"
+    },
+    "thesis_module": {
+      "title": "Thesis Module",
+      "type": "string"
+    },
+    "venue": {
+      "title": "Venue",
+      "type": "string"
+    },
+    "vig_adjusted_threshold_bps": {
+      "title": "Vig Adjusted Threshold Bps",
+      "type": "number"
+    }
+  },
+  "required": [
+    "run_id",
+    "thesis_module",
+    "venue",
+    "contract_id",
+    "contract_label",
+    "model_probability",
+    "market_implied_probability",
+    "edge_bps",
+    "bid_price",
+    "ask_price",
+    "spread_bps",
+    "vig_adjusted_threshold_bps",
+    "decision",
+    "decision_reason",
+    "model_version",
+    "feature_set_version",
+    "assumption_version"
+  ],
+  "title": "SignalRecord",
+  "type": "object"
+}

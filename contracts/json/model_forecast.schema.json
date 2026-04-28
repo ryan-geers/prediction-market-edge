@@ -1,0 +1,75 @@
+{
+  "properties": {
+    "created_at_utc": {
+      "format": "date-time",
+      "title": "Created At Utc",
+      "type": "string"
+    },
+    "feature_set_version": {
+      "title": "Feature Set Version",
+      "type": "string"
+    },
+    "forecast_id": {
+      "title": "Forecast Id",
+      "type": "string"
+    },
+    "model_probability": {
+      "title": "Model Probability",
+      "type": "number"
+    },
+    "model_version": {
+      "title": "Model Version",
+      "type": "string"
+    },
+    "release_date_utc": {
+      "format": "date-time",
+      "title": "Release Date Utc",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "target_metric": {
+      "title": "Target Metric",
+      "type": "string"
+    },
+    "thesis_module": {
+      "title": "Thesis Module",
+      "type": "string"
+    },
+    "training_end_utc": {
+      "format": "date-time",
+      "title": "Training End Utc",
+      "type": "string"
+    },
+    "training_start_utc": {
+      "format": "date-time",
+      "title": "Training Start Utc",
+      "type": "string"
+    },
+    "validation_mae": {
+      "title": "Validation Mae",
+      "type": "number"
+    },
+    "validation_rmse": {
+      "title": "Validation Rmse",
+      "type": "number"
+    }
+  },
+  "required": [
+    "run_id",
+    "thesis_module",
+    "release_date_utc",
+    "model_probability",
+    "target_metric",
+    "model_version",
+    "feature_set_version",
+    "training_start_utc",
+    "training_end_utc",
+    "validation_rmse",
+    "validation_mae"
+  ],
+  "title": "ModelForecastRecord",
+  "type": "object"
+}

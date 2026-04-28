@@ -1,0 +1,2 @@
+[console_scripts]
+pme = src.cli.main:main

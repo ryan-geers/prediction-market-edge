@@ -1,0 +1,22 @@
+{
+  "run_id": "b57c3ba5-db05-49aa-9cb4-c9fc06b3e497",
+  "thesis": "economic_indicators",
+  "model_probability": 0.99,
+  "predicted_cpi_mom_pct": 0.7228355299999993,
+  "release_date": "2026-04-01 00:00:00+00:00",
+  "target_metric": "CPI m/m % next month (FRED CPIAUCSL when available; else proxy)",
+  "train_rmse": 5.373820228835405e-16,
+  "train_mae": 5.15460690004537e-16,
+  "validation_rmse": 4.611102534756203e-16,
+  "validation_mae": 4.440892098500626e-16,
+  "walk_forward_val_rmse": 2.6622212897024595e-16,
+  "walk_forward_val_mae": 2.220446049250313e-16,
+  "n_train": 28,
+  "n_val": 8,
+  "backtest": {
+    "chronological_val_fraction": 0.2,
+    "validation_start_row": 28,
+    "n_total": 36,
+    "walk_forward_steps": 8
+  }
+}

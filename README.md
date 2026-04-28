@@ -1,0 +1,76 @@
+# Prediction Market Edge
+
+Polyglot monorepo for identifying pricing inefficiencies in prediction markets.
+
+## V1 Scope
+
+- Python-first quant pipeline
+- Economic indicators thesis implemented end-to-end first
+- Shared thesis plugin interface for future modules
+- Paper-trading ledger with reproducible run metadata
+- GitHub Actions scheduled/manual execution (no always-on hosting)
+- Weekly email summary workflow
+- Optional local Streamlit dashboard
+
+## Quick Start
+
+1. Create a virtual environment and install dependencies:
+   - `python -m venv .venv`
+   - `source .venv/bin/activate`
+   - `pip install -e ".[dev]"`
+2. Copy environment template:
+   - `cp .env.example .env`
+3. Run a local pipeline execution:
+   - `pme run`
+4. Open the dashboard locally:
+   - `streamlit run src/dashboard/streamlit_app.py`
+5. Run tests and optional linting:
+   - `pytest`
+   - `pme check-state` — verify DuckDB + recent `run_manifest` (weekly CI uses `--max-run-age-days 7`)
+   - `ruff check src tests` (optional)
+   - After changing Pydantic models in `src/core/schemas.py`: `python scripts/export_contract_schemas.py` and commit `contracts/json/`.
+
+## Documentation
+
+- **[PREFLIGHT_CHECKLIST.md](docs/PREFLIGHT_CHECKLIST.md)** — secrets, first run, schedules, before going live.
+- **[CONTRIBUTING.md](docs/CONTRIBUTING.md)** — adding a thesis module, contracts, dev commands.
+- **[OPERATIONS.md](docs/OPERATIONS.md)** — GitHub Actions, secrets, artifacts, scheduling, email dry-run.
+- **[PYTHON_VS_JAVA.md](docs/PYTHON_VS_JAVA.md)** — when logic stays in Python vs the Java scaffold.
+
+## Repository Layout
+
+- `src/core`: config, logging, http utils, schemas, storage
+- `src/connectors`: market/data connectors
+- `src/theses`: thesis modules and plugin contracts
+- `src/pipeline`: orchestration logic
+- `src/cli`: command entrypoints
+- `src/dashboard`: local Streamlit app
+- `.github/workflows`: scheduled/manual execution and weekly digest
+- `contracts`: JSON Schemas in **`contracts/json/`** for cross-runtime use (regenerate via `scripts/export_contract_schemas.py`)
+- `docs`: contributor and operations guides
+- `scripts`: maintenance utilities (schema export)
+- `services-java`: optional Java service scaffold
+
+## Current Notes
+
+- Market/data connectors currently include safe starter implementations and placeholders for API integration.
+- Weekly email workflow expects SMTP secrets configured in GitHub repository settings.
+- Runtime data files under `data/` should not be committed.
+
+## Reporting and weekly email (Phase 6)
+
+- Each `pme run` writes **`data/reports/run_report_<run_id>.md`** and a sibling **`.html`** summary.
+- Generate a rolling 7-day digest (Markdown + optional HTML):
+
+  ```bash
+  pme weekly-digest --output data/reports/weekly_digest.md --html-output data/reports/weekly_digest.html
+  ```
+
+- Send the Markdown file over SMTP (reads `.env` or process env; **no send** if `EMAIL_DRY_RUN=true` or you pass `--dry-run`):
+
+  ```bash
+  pme send-weekly-email --markdown-file data/reports/weekly_digest.md
+  pme send-weekly-email --markdown-file data/reports/weekly_digest.md --dry-run
+  ```
+
+- **GitHub Actions:** workflow [Weekly Summary Email](.github/workflows/weekly-summary-email.yml) restores `pme-state`, generates both formats, uploads artifact `pme-weekly-digest`, and emails unless dry-run. Set repository **secrets**: `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_FROM`, `EMAIL_TO`. To force dry-run on scheduled runs, set repository **variable** `PME_EMAIL_DRY_RUN` to `true`, or enable **Dry run** on manual `workflow_dispatch`.
