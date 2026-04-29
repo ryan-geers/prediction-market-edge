@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     # Phase 3 dedup knob — off by default to preserve existing behaviour until enabled deliberately
     paper_allow_add_to_position: bool = False
 
+    # Set True in CI / production to write run reports and model artifact files.
+    # Leave False (default) for local runs to avoid cluttering data/ with files every invocation.
+    save_run_artifacts: bool = False
+
     kalshi_api_key: str | None = None
     polymarket_api_key: str | None = None
     fred_api_key: str | None = None

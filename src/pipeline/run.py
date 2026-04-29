@@ -33,7 +33,7 @@ def _config_hash(settings_dict: dict) -> str:
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
-def run_pipeline(thesis_name: str = "economic_indicators") -> tuple[str, Path]:
+def run_pipeline(thesis_name: str = "economic_indicators") -> tuple[str, Path | None]:
     settings = get_settings()
     setup_logging(settings.log_level)
     storage = Storage(settings.duckdb_path)
@@ -104,15 +104,17 @@ def run_pipeline(thesis_name: str = "economic_indicators") -> tuple[str, Path]:
     storage.upsert_run_manifest(manifest)
     storage.close()
 
-    report_text = generate_run_report(str(settings.duckdb_path), run_id)
+    if not settings.save_run_artifacts:
+        LOGGER.info("Run complete. run_id=%s (artifact writing disabled)", run_id)
+        return run_id, None
+
     reports_dir = settings.data_dir / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     report_path = reports_dir / f"run_report_{run_id}.md"
-    report_path.write_text(report_text)
+    report_path.write_text(generate_run_report(str(settings.duckdb_path), run_id))
     report_html_path = reports_dir / f"run_report_{run_id}.html"
     report_html_path.write_text(generate_run_report_html(str(settings.duckdb_path), run_id))
 
-    # Persist lightweight model artifacts for auditability by release date/run.
     artifacts_dir = settings.data_dir / "artifacts" / thesis_name / run_id
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     if "training_df" in features:

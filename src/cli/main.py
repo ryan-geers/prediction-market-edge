@@ -82,7 +82,8 @@ def main() -> None:
     if args.command == "run":
         run_id, report_path = run_pipeline(thesis_name=args.thesis)
         print(f"run_id={run_id}")
-        print(f"report_path={report_path}")
+        if report_path is not None:
+            print(f"report_path={report_path}")
     elif args.command == "weekly-digest":
         settings = get_settings()
         text = generate_weekly_digest(str(settings.duckdb_path))
