@@ -4,10 +4,13 @@ from typing import Iterable
 import duckdb
 
 from src.core.schemas import (
+    AddToPosition,
     MarketSnapshotRecord,
     ModelForecastRecord,
     PaperOrderRecord,
     PaperPositionRecord,
+    PositionClose,
+    PositionMark,
     RunManifest,
     SignalRecord,
 )
@@ -125,6 +128,8 @@ SCHEMA_MIGRATIONS = [
     "ALTER TABLE paper_orders ADD COLUMN IF NOT EXISTS slippage_model_name VARCHAR",
     "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS run_id VARCHAR",
     "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS signal_id VARCHAR",
+    # Phase 2: direction is required for exit-flip logic; Phase 3 uses it for dedup.
+    "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS direction VARCHAR",
 ]
 
 
@@ -194,8 +199,8 @@ class Storage:
                 INSERT INTO paper_positions (
                   position_id, run_id, signal_id, venue, contract_id, opened_at_utc, closed_at_utc,
                   net_qty, avg_entry_price, avg_exit_price, realized_pnl, unrealized_pnl, mark_price,
-                  last_mark_time_utc, status, close_reason
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  last_mark_time_utc, status, close_reason, direction
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     p["position_id"],
@@ -214,6 +219,7 @@ class Storage:
                     p["last_mark_time_utc"],
                     p["status"],
                     p["close_reason"],
+                    p["direction"],
                 ],
             )
 
@@ -230,6 +236,172 @@ class Storage:
                 "INSERT INTO model_forecasts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 list(forecast.model_dump().values()),
             )
+
+    def get_open_positions(self) -> list[PaperPositionRecord]:
+        """Return all currently-open paper positions."""
+        rows = self.con.execute(
+            """
+            SELECT position_id, run_id, signal_id, venue, contract_id,
+                   opened_at_utc, closed_at_utc, net_qty, avg_entry_price,
+                   avg_exit_price, realized_pnl, unrealized_pnl, mark_price,
+                   last_mark_time_utc, status, close_reason, direction
+            FROM paper_positions
+            WHERE status = 'open'
+            """
+        ).fetchall()
+        return [
+            PaperPositionRecord(
+                position_id=r[0],
+                run_id=r[1] or "",
+                signal_id=r[2] or "",
+                venue=r[3],
+                contract_id=r[4],
+                opened_at_utc=r[5],
+                closed_at_utc=r[6],
+                net_qty=r[7],
+                avg_entry_price=r[8],
+                avg_exit_price=r[9],
+                realized_pnl=r[10] or 0.0,
+                unrealized_pnl=r[11] or 0.0,
+                mark_price=r[12],
+                last_mark_time_utc=r[13],
+                status=r[14],
+                close_reason=r[15],
+                direction=r[16],
+            )
+            for r in rows
+        ]
+
+    def close_positions(self, closes: Iterable[PositionClose]) -> int:
+        """
+        Mark positions as closed and record exit details.
+        Returns the number of rows updated.
+        """
+        updated = 0
+        for close in closes:
+            rows = self.con.execute(
+                """
+                UPDATE paper_positions
+                SET
+                  status          = 'closed',
+                  closed_at_utc   = ?,
+                  avg_exit_price  = ?,
+                  realized_pnl    = ?,
+                  unrealized_pnl  = 0.0,
+                  close_reason    = ?
+                WHERE position_id = ?
+                RETURNING position_id
+                """,
+                [
+                    close.closed_at_utc,
+                    close.avg_exit_price,
+                    close.realized_pnl,
+                    close.close_reason,
+                    close.position_id,
+                ],
+            ).fetchall()
+            updated += len(rows)
+        return updated
+
+    def get_open_position(
+        self, contract_id: str, venue: str, direction: str
+    ) -> PaperPositionRecord | None:
+        """Return the single open position for (contract_id, venue, direction), or None."""
+        row = self.con.execute(
+            """
+            SELECT position_id, run_id, signal_id, venue, contract_id,
+                   opened_at_utc, closed_at_utc, net_qty, avg_entry_price,
+                   avg_exit_price, realized_pnl, unrealized_pnl, mark_price,
+                   last_mark_time_utc, status, close_reason, direction
+            FROM paper_positions
+            WHERE status       = 'open'
+              AND contract_id  = ?
+              AND venue        = ?
+              AND direction    = ?
+            LIMIT 1
+            """,
+            [contract_id, venue, direction],
+        ).fetchone()
+        if row is None:
+            return None
+        return PaperPositionRecord(
+            position_id=row[0],
+            run_id=row[1] or "",
+            signal_id=row[2] or "",
+            venue=row[3],
+            contract_id=row[4],
+            opened_at_utc=row[5],
+            closed_at_utc=row[6],
+            net_qty=row[7],
+            avg_entry_price=row[8],
+            avg_exit_price=row[9],
+            realized_pnl=row[10] or 0.0,
+            unrealized_pnl=row[11] or 0.0,
+            mark_price=row[12],
+            last_mark_time_utc=row[13],
+            status=row[14],
+            close_reason=row[15],
+            direction=row[16],
+        )
+
+    def add_to_position(self, op: AddToPosition) -> bool:
+        """
+        VWAP-merge a new fill into an existing open position.
+        Updates net_qty, avg_entry_price, and recomputes unrealized_pnl from the
+        current mark_price (which Phase 1 already refreshed this run).
+        Returns True if a row was updated.
+        """
+        rows = self.con.execute(
+            """
+            UPDATE paper_positions
+            SET
+              net_qty         = ?,
+              avg_entry_price = ?,
+              unrealized_pnl  = (mark_price - ?) * ?
+            WHERE position_id = ?
+            RETURNING position_id
+            """,
+            [
+                op.new_net_qty,
+                op.new_avg_entry_price,
+                op.new_avg_entry_price,
+                op.new_net_qty,
+                op.position_id,
+            ],
+        ).fetchall()
+        return len(rows) > 0
+
+    def mark_open_positions(self, marks: Iterable[PositionMark]) -> int:
+        """
+        Re-price all open positions for the given contracts at the current market mid.
+        Returns the total number of rows updated.
+        Uses RETURNING to get an accurate count because DuckDB always reports
+        rowcount=-1 for UPDATE statements.
+        """
+        updated = 0
+        for mark in marks:
+            rows = self.con.execute(
+                """
+                UPDATE paper_positions
+                SET
+                  mark_price           = ?,
+                  unrealized_pnl       = (? - avg_entry_price) * net_qty,
+                  last_mark_time_utc   = ?
+                WHERE status       = 'open'
+                  AND contract_id  = ?
+                  AND venue        = ?
+                RETURNING position_id
+                """,
+                [
+                    mark.mark_price,
+                    mark.mark_price,
+                    mark.last_mark_time_utc,
+                    mark.contract_id,
+                    mark.venue,
+                ],
+            ).fetchall()
+            updated += len(rows)
+        return updated
 
     def close(self) -> None:
         self.con.close()

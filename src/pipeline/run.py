@@ -8,8 +8,9 @@ from uuid import uuid4
 
 from src.core.config import get_settings
 from src.core.logging import setup_logging
-from src.core.schemas import RunManifest
+from src.core.schemas import PositionMark, RunManifest
 from src.core.storage import Storage
+from src.pipeline.paper_trading import apply_dedup, apply_exits
 from src.pipeline.reporting import generate_run_report, generate_run_report_html
 from src.theses.registry import build_registry
 
@@ -56,13 +57,48 @@ def run_pipeline(thesis_name: str = "economic_indicators") -> tuple[str, Path]:
     forecast = thesis.forecast(features)
     forecast_records = thesis.build_forecast_records(run_id, forecast)
     signals, snapshots = thesis.generate_signals(run_id, forecast)
-    orders, positions = thesis.paper_trade(signals)
+
+    # Phase 1: re-mark any existing open positions at the current mid before
+    # creating new entries so unrealized PnL is always current.
+    marks = [
+        PositionMark(
+            contract_id=snap.contract_id,
+            venue=snap.venue,
+            mark_price=snap.mid_price,
+        )
+        for snap in snapshots
+    ]
+    marked = storage.mark_open_positions(marks)
+    LOGGER.info("Re-marked %d open position rows", marked)
+
+    # Phase 2: evaluate exit rules against open positions before creating new entries.
+    open_positions = storage.get_open_positions()
+    closes = apply_exits(open_positions, signals, snapshots, settings)
+    closed = storage.close_positions(closes)
+    LOGGER.info("Closed %d positions this run", closed)
+
+    orders, candidate_positions = thesis.paper_trade(signals)
+
+    # Phase 3: dedup — merge candidates into existing open positions when enabled.
+    # Exclude positions just closed this run so they aren't treated as merge targets.
+    closed_ids = {c.position_id for c in closes}
+    existing_by_key = {
+        (p.contract_id, p.venue, p.direction): p
+        for p in open_positions
+        if p.direction is not None and p.position_id not in closed_ids
+    }
+    new_positions, add_tos = apply_dedup(candidate_positions, existing_by_key, settings)
+    for add_to in add_tos:
+        storage.add_to_position(add_to)
+    LOGGER.info(
+        "Dedup: %d new positions, %d merged into existing", len(new_positions), len(add_tos)
+    )
 
     storage.insert_model_forecasts(forecast_records)
     storage.insert_signals(signals)
     storage.insert_snapshots(snapshots)
     storage.insert_orders(orders)
-    storage.insert_positions(positions)
+    storage.insert_positions(new_positions)
 
     manifest.completed_at_utc = datetime.now(timezone.utc)
     storage.upsert_run_manifest(manifest)

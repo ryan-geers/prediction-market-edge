@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     paper_slippage_model_name: str = "linear_bps_on_touch"
     paper_eod_close: bool = False
 
+    # Phase 2 exit knobs
+    paper_exit_on_flip: bool = True          # close when signal reverses direction
+    paper_stop_loss_pct: float | None = None # e.g. 0.15 = close at -15% of cost basis; None = disabled
+    paper_close_on_settle: bool = True       # close when connector reports contract settled
+
+    # Phase 3 dedup knob — off by default to preserve existing behaviour until enabled deliberately
+    paper_allow_add_to_position: bool = False
+
     kalshi_api_key: str | None = None
     polymarket_api_key: str | None = None
     fred_api_key: str | None = None

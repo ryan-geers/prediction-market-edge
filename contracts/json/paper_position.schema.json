@@ -45,6 +45,22 @@
       "title": "Contract Id",
       "type": "string"
     },
+    "direction": {
+      "anyOf": [
+        {
+          "enum": [
+            "yes",
+            "no"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Direction"
+    },
     "last_mark_time_utc": {
       "anyOf": [
         {

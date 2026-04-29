@@ -7,7 +7,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from src.core.schemas import PaperOrderRecord, PaperPositionRecord, SignalRecord, utc_now
+from src.core.schemas import (
+    AddToPosition,
+    MarketSnapshotRecord,
+    PaperOrderRecord,
+    PaperPositionRecord,
+    PositionClose,
+    SignalRecord,
+    utc_now,
+)
 
 if TYPE_CHECKING:
     from src.core.config import Settings
@@ -43,6 +51,160 @@ def _position_qty(fill_price: float, settings: "Settings") -> float:
     except (TypeError, ValueError, ZeroDivisionError):
         pass
     return float(settings.paper_default_qty)
+
+
+def apply_exits(
+    open_positions: list[PaperPositionRecord],
+    signals: list[SignalRecord],
+    snapshots: list[MarketSnapshotRecord],
+    settings: Settings,
+) -> list[PositionClose]:
+    """
+    Evaluate exit rules against currently-open positions and return a list of
+    positions that should be closed this run.
+
+    Rules (applied in order; first match wins):
+      A. Signal flip  — close when the thesis reverses its opinion (paper_exit_on_flip)
+      B. Stop-loss    — close when unrealised loss exceeds a % of cost basis (paper_stop_loss_pct)
+      C. Settlement   — close when the connector marks a contract settled (paper_close_on_settle)
+                        [fires only when snapshot data includes settlement status; stub for now]
+    """
+    closes: list[PositionClose] = []
+    now = utc_now()
+    threshold_bps = float(settings.edge_threshold_bps)
+
+    # Build O(1) lookups from the current run's data.
+    signal_by_contract: dict[tuple[str, str], SignalRecord] = {
+        (s.contract_id, s.venue): s for s in signals
+    }
+    snap_by_contract: dict[tuple[str, str], MarketSnapshotRecord] = {
+        (sn.contract_id, sn.venue): sn for sn in snapshots
+    }
+
+    already_closing: set[str] = set()
+
+    for pos in open_positions:
+        if pos.status != "open":
+            continue
+
+        key = (pos.contract_id, pos.venue)
+
+        # ── Rule A: edge flip / signal reversal ──────────────────────────────
+        if settings.paper_exit_on_flip and pos.direction is not None:
+            sig = signal_by_contract.get(key)
+            if sig is not None:
+                flip_yes = pos.direction == "yes" and sig.edge_bps < -threshold_bps
+                flip_no = pos.direction == "no" and sig.edge_bps > threshold_bps
+                if flip_yes or flip_no:
+                    snap = snap_by_contract.get(key)
+                    yes_mid = snap.mid_price if snap else float(sig.market_implied_probability)
+                    exit_px = yes_mid if pos.direction == "yes" else (1.0 - yes_mid)
+                    realized = (exit_px - pos.avg_entry_price) * pos.net_qty
+                    closes.append(
+                        PositionClose(
+                            position_id=pos.position_id,
+                            avg_exit_price=exit_px,
+                            realized_pnl=realized,
+                            close_reason="signal_flip",
+                            closed_at_utc=now,
+                        )
+                    )
+                    already_closing.add(pos.position_id)
+                    continue
+
+        # ── Rule B: stop-loss ─────────────────────────────────────────────────
+        if (
+            settings.paper_stop_loss_pct is not None
+            and pos.position_id not in already_closing
+        ):
+            cost_basis = pos.avg_entry_price * pos.net_qty
+            if cost_basis > 0:
+                loss_pct = pos.unrealized_pnl / cost_basis
+                if loss_pct < -abs(settings.paper_stop_loss_pct):
+                    snap = snap_by_contract.get(key)
+                    yes_mid = (
+                        snap.mid_price
+                        if snap
+                        else (pos.mark_price if pos.mark_price is not None else pos.avg_entry_price)
+                    )
+                    exit_px = yes_mid if (pos.direction != "no") else (1.0 - yes_mid)
+                    realized = (exit_px - pos.avg_entry_price) * pos.net_qty
+                    closes.append(
+                        PositionClose(
+                            position_id=pos.position_id,
+                            avg_exit_price=exit_px,
+                            realized_pnl=realized,
+                            close_reason="stop_loss",
+                            closed_at_utc=now,
+                        )
+                    )
+                    already_closing.add(pos.position_id)
+                    continue
+
+        # ── Rule C: contract settlement ───────────────────────────────────────
+        # Activates when connector-level settlement data is available.
+        # Placeholder: no snapshot data currently carries a settled/closed flag,
+        # so this rule is wired but dormant until connector support is added.
+
+    return closes
+
+
+def apply_dedup(
+    candidates: list[PaperPositionRecord],
+    existing_by_key: dict[tuple[str, str, str], PaperPositionRecord],
+    settings: Settings,
+) -> tuple[list[PaperPositionRecord], list[AddToPosition]]:
+    """
+    Deduplicate new-entry candidates against currently-open positions.
+
+    When ``paper_allow_add_to_position`` is False (default) the function is a
+    no-op and returns ``(candidates, [])``, preserving existing behaviour.
+
+    When enabled, for each candidate whose (contract_id, venue, direction) key
+    already has an open position the fill is VWAP-merged into that row instead
+    of creating a new one.  Closed candidates (eod_close mode) and candidates
+    without a direction always pass through as new inserts.
+
+    Returns:
+        new_positions  — list of PaperPositionRecord to insert fresh into DB
+        add_tos        — list of AddToPosition (VWAP merge ops) to apply to existing rows
+    """
+    if not settings.paper_allow_add_to_position:
+        return candidates, []
+
+    new_positions: list[PaperPositionRecord] = []
+    add_tos: list[AddToPosition] = []
+
+    for pos in candidates:
+        # Closed positions (eod_close) or direction-less rows always become new inserts.
+        if pos.status == "closed" or pos.direction is None:
+            new_positions.append(pos)
+            continue
+
+        key = (pos.contract_id, pos.venue, pos.direction)
+        existing = existing_by_key.get(key)
+
+        if existing is None:
+            new_positions.append(pos)
+        else:
+            # VWAP: new_avg = (old_avg * old_qty + fill * new_qty) / (old_qty + new_qty)
+            new_qty = existing.net_qty + pos.net_qty
+            if new_qty > 0:
+                new_avg = (
+                    existing.avg_entry_price * existing.net_qty
+                    + pos.avg_entry_price * pos.net_qty
+                ) / new_qty
+            else:
+                new_avg = existing.avg_entry_price
+            add_tos.append(
+                AddToPosition(
+                    position_id=existing.position_id,
+                    new_net_qty=new_qty,
+                    new_avg_entry_price=new_avg,
+                )
+            )
+
+    return new_positions, add_tos
 
 
 def simulate_paper_trades(
@@ -131,6 +293,7 @@ def simulate_paper_trades(
                     last_mark_time_utc=now,
                     status="closed",
                     close_reason="eod_mark",
+                    direction=side,  # type: ignore[arg-type]
                 )
             )
         else:
@@ -151,6 +314,7 @@ def simulate_paper_trades(
                     mark_price=mark_px,
                     last_mark_time_utc=now,
                     status="open",
+                    direction=side,  # type: ignore[arg-type]
                 )
             )
 

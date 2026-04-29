@@ -72,6 +72,39 @@ class PaperPositionRecord(BaseModel):
     last_mark_time_utc: datetime | None = None
     status: Literal["open", "closed"] = "open"
     close_reason: str | None = None
+    # Added in Phase 2 (required for exit-flip logic); used for dedup in Phase 3.
+    direction: Literal["yes", "no"] | None = None
+
+
+class PositionClose(BaseModel):
+    """Captures the data needed to close a paper position."""
+
+    position_id: str
+    avg_exit_price: float
+    realized_pnl: float
+    close_reason: Literal["signal_flip", "stop_loss", "contract_settled", "manual"]
+    closed_at_utc: datetime = Field(default_factory=utc_now)
+
+
+class PositionMark(BaseModel):
+    """Lightweight mark used to re-price open positions each pipeline run."""
+
+    contract_id: str
+    venue: str
+    mark_price: float
+    last_mark_time_utc: datetime = Field(default_factory=utc_now)
+
+
+class AddToPosition(BaseModel):
+    """
+    VWAP-merged update for an existing open position (Phase 3 dedup).
+    Caller pre-computes new_net_qty and new_avg_entry_price so storage stays simple.
+    """
+
+    position_id: str
+    new_net_qty: float
+    new_avg_entry_price: float
+    merged_at_utc: datetime = Field(default_factory=utc_now)
 
 
 class MarketSnapshotRecord(BaseModel):
