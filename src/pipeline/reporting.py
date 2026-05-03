@@ -161,7 +161,7 @@ def _weekly_payload(con: duckdb.DuckDBPyConnection, since: datetime) -> dict[str
     winners = con.execute(
         """
         SELECT contract_id, realized_pnl, run_id FROM paper_positions
-        WHERE status = 'closed' AND realized_pnl IS NOT NULL
+        WHERE status = 'closed' AND realized_pnl IS NOT NULL AND realized_pnl > 0
           AND COALESCE(closed_at_utc, opened_at_utc) >= ?
         ORDER BY realized_pnl DESC NULLS LAST LIMIT 5
         """,
@@ -558,11 +558,13 @@ def _format_weekly_md(w: dict[str, Any]) -> str:
             ]
         )
 
+    lines.extend(["**Top winners (window):**", ""])
     if w.get("winners"):
-        lines.extend(["**Top winners (window):**", ""])
         for cid, rp, _rid in w["winners"]:
             lines.append(f"- {cid}: {_fmtp(rp)}")
-        lines.append("")
+    else:
+        lines.append("- _(no profitable closed positions this period)_")
+    lines.append("")
 
     if w.get("losers"):
         lines.extend(["**Top losers (window):**", ""])

@@ -2,6 +2,7 @@ import argparse
 from pathlib import Path
 
 from src.core.config import get_settings
+from src.core.storage import Storage
 from src.pipeline.email_digest import send_weekly_digest_email
 from src.pipeline.reporting import (
     generate_paper_trade_report,
@@ -61,6 +62,15 @@ def main() -> None:
         help="Keep the newest N per-run Markdown reports by mtime (default: 48)",
     )
 
+    sub.add_parser(
+        "consolidate-positions",
+        help=(
+            "Merge duplicate open positions that share (contract_id, venue, direction). "
+            "Keeps the oldest position per group, VWAP-merges qty/price from duplicates "
+            "into it, then closes duplicates with close_reason='dedup_consolidated'."
+        ),
+    )
+
     check_parser = sub.add_parser(
         "check-state",
         help="Exit 0 if DuckDB exists and run_manifest has activity within --max-run-age-days",
@@ -116,6 +126,21 @@ def main() -> None:
     elif args.command == "prune-reports":
         kept, removed = prune_run_reports(args.dir, keep=args.keep)
         print(f"prune-reports: kept={kept} removed_pairs={removed} dir={args.dir.resolve()}")
+    elif args.command == "consolidate-positions":
+        settings = get_settings()
+        storage = Storage(settings.duckdb_path)
+        summaries = storage.consolidate_duplicate_positions()
+        storage.close()
+        if not summaries:
+            print("consolidate-positions: no duplicate open positions found.")
+        else:
+            for s in summaries:
+                print(
+                    f"consolidated: {s['contract_id']} ({s['venue']}, {s['direction']}) "
+                    f"— {s['positions_merged']} positions → 1 "
+                    f"(qty={s['consolidated_qty']:.4f}, vwap_entry={s['vwap_avg_entry']:.4f})"
+                )
+            print(f"consolidate-positions: merged {len(summaries)} group(s).")
     elif args.command == "check-state":
         settings = get_settings()
         db = args.duckdb if args.duckdb is not None else settings.duckdb_path

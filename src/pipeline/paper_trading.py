@@ -157,21 +157,22 @@ def apply_dedup(
     """
     Deduplicate new-entry candidates against currently-open positions.
 
-    When ``paper_allow_add_to_position`` is False (default) the function is a
-    no-op and returns ``(candidates, [])``, preserving existing behaviour.
+    When ``paper_allow_add_to_position`` is False (default), candidates whose
+    (contract_id, venue, direction) key already has an open position are
+    **dropped** — the pipeline skips re-entering a contract it already holds.
+    Candidates for new contracts (no existing open position) are passed through
+    as new inserts unchanged.
 
-    When enabled, for each candidate whose (contract_id, venue, direction) key
-    already has an open position the fill is VWAP-merged into that row instead
-    of creating a new one.  Closed candidates (eod_close mode) and candidates
-    without a direction always pass through as new inserts.
+    When ``paper_allow_add_to_position`` is True, existing positions are
+    VWAP-merged with the new fill instead of dropped.
+
+    Closed candidates (eod_close mode) and direction-less rows always pass
+    through as new inserts regardless of the flag.
 
     Returns:
         new_positions  — list of PaperPositionRecord to insert fresh into DB
         add_tos        — list of AddToPosition (VWAP merge ops) to apply to existing rows
     """
-    if not settings.paper_allow_add_to_position:
-        return candidates, []
-
     new_positions: list[PaperPositionRecord] = []
     add_tos: list[AddToPosition] = []
 
@@ -185,8 +186,9 @@ def apply_dedup(
         existing = existing_by_key.get(key)
 
         if existing is None:
+            # No open position for this contract — always insert.
             new_positions.append(pos)
-        else:
+        elif settings.paper_allow_add_to_position:
             # VWAP: new_avg = (old_avg * old_qty + fill * new_qty) / (old_qty + new_qty)
             new_qty = existing.net_qty + pos.net_qty
             if new_qty > 0:
@@ -203,6 +205,7 @@ def apply_dedup(
                     new_avg_entry_price=new_avg,
                 )
             )
+        # else: paper_allow_add_to_position is False and position already exists — skip.
 
     return new_positions, add_tos
 

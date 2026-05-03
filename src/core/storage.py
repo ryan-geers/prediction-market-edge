@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -402,6 +403,100 @@ class Storage:
             ).fetchall()
             updated += len(rows)
         return updated
+
+    def consolidate_duplicate_positions(self) -> list[dict]:
+        """
+        Merge duplicate open positions that share (contract_id, venue, direction).
+
+        For each such group the oldest position (by opened_at_utc) is kept as the
+        survivor. All duplicates are VWAP-merged into it (qty summed, avg entry
+        price VWAP-weighted) and then marked closed with
+        close_reason='dedup_consolidated' and realized_pnl=0 so they no longer
+        appear in the open book.
+
+        Returns a list of summary dicts, one per consolidated group.
+        """
+        groups = self.con.execute(
+            """
+            SELECT contract_id, venue, direction, COUNT(*) AS cnt
+            FROM paper_positions
+            WHERE status = 'open' AND direction IS NOT NULL
+            GROUP BY contract_id, venue, direction
+            HAVING COUNT(*) > 1
+            """
+        ).fetchall()
+
+        summaries: list[dict] = []
+        now = datetime.now(timezone.utc)
+
+        for contract_id, venue, direction, cnt in groups:
+            rows = self.con.execute(
+                """
+                SELECT position_id, net_qty, avg_entry_price, mark_price
+                FROM paper_positions
+                WHERE status = 'open'
+                  AND contract_id = ?
+                  AND venue       = ?
+                  AND direction   = ?
+                ORDER BY opened_at_utc ASC NULLS LAST
+                """,
+                [contract_id, venue, direction],
+            ).fetchall()
+
+            if len(rows) <= 1:
+                continue
+
+            survivor_id = rows[0][0]
+
+            total_qty = sum(r[1] for r in rows)
+            if total_qty > 0:
+                vwap_price = sum(r[1] * r[2] for r in rows) / total_qty
+            else:
+                vwap_price = rows[0][2]
+
+            mark = rows[0][3]
+            new_unrealized = (mark - vwap_price) * total_qty if mark is not None else 0.0
+
+            self.con.execute(
+                """
+                UPDATE paper_positions
+                SET net_qty        = ?,
+                    avg_entry_price = ?,
+                    unrealized_pnl  = ?
+                WHERE position_id = ?
+                """,
+                [total_qty, vwap_price, new_unrealized, survivor_id],
+            )
+
+            for dup_id, _, dup_entry, _ in rows[1:]:
+                self.con.execute(
+                    """
+                    UPDATE paper_positions
+                    SET status         = 'closed',
+                        closed_at_utc  = ?,
+                        avg_exit_price = avg_entry_price,
+                        realized_pnl   = 0.0,
+                        unrealized_pnl = 0.0,
+                        net_qty        = 0.0,
+                        close_reason   = 'dedup_consolidated'
+                    WHERE position_id = ?
+                    """,
+                    [now, dup_id],
+                )
+
+            summaries.append(
+                {
+                    "contract_id": contract_id,
+                    "venue": venue,
+                    "direction": direction,
+                    "positions_merged": cnt,
+                    "survivor_position_id": survivor_id,
+                    "consolidated_qty": total_qty,
+                    "vwap_avg_entry": vwap_price,
+                }
+            )
+
+        return summaries
 
     def close(self) -> None:
         self.con.close()

@@ -1,8 +1,11 @@
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
+
+LOGGER = logging.getLogger(__name__)
 
 # FRED: CPI for All Urban Consumers, seasonally adjusted (index level; mom % from levels).
 CPI_SERIES_FRED = "CPIAUCSL"
@@ -149,10 +152,26 @@ def train_validate_predict(
     train_rmse = float(np.sqrt(np.mean((y_train - y_hat_train) ** 2)))
     train_mae = float(np.mean(np.abs(y_train - y_hat_train)))
 
+    if len(y_val) == 0:
+        raise ValueError(
+            f"Validation split is empty (n={n}, split_idx={split_idx}). "
+            "Cannot compute model quality metrics — refusing to generate signals on an unvalidated model."
+        )
+
     val_design = np.c_[np.ones(X_val.shape[0]), X_val]
     y_hat_val = val_design @ coef
-    rmse = float(np.sqrt(np.mean((y_val - y_hat_val) ** 2))) if len(y_val) else 0.0
-    mae = float(np.mean(np.abs(y_val - y_hat_val))) if len(y_val) else 0.0
+    rmse = float(np.sqrt(np.mean((y_val - y_hat_val) ** 2)))
+    mae = float(np.mean(np.abs(y_val - y_hat_val)))
+
+    if rmse < 1e-6:
+        LOGGER.warning(
+            "Suspiciously low validation RMSE (%.2e) — likely caused by a proxy target "
+            "that is a near-linear function of the training features (target leakage). "
+            "n_train=%d, n_val=%d",
+            rmse,
+            split_idx,
+            len(y_val),
+        )
 
     # Walk-forward on validation: for each k, train on 0:split_idx+k, predict one step at k
     wf_errors: list[float] = []
