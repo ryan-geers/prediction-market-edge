@@ -374,7 +374,9 @@ class Storage:
 
     def mark_open_positions(self, marks: Iterable[PositionMark]) -> int:
         """
-        Re-price all open positions for the given contracts at the current market mid.
+        Re-price all open positions for the given contracts at the current YES mid.
+        NO positions are marked in NO-price space (1 - YES mid), matching their
+        entry price basis.
         Returns the total number of rows updated.
         Uses RETURNING to get an accurate count because DuckDB always reports
         rowcount=-1 for UPDATE statements.
@@ -385,8 +387,16 @@ class Storage:
                 """
                 UPDATE paper_positions
                 SET
-                  mark_price           = ?,
-                  unrealized_pnl       = (? - avg_entry_price) * net_qty,
+                  mark_price           = CASE
+                    WHEN direction = 'no' THEN 1.0 - ?
+                    ELSE ?
+                  END,
+                  unrealized_pnl       = (
+                    CASE
+                      WHEN direction = 'no' THEN 1.0 - ?
+                      ELSE ?
+                    END - avg_entry_price
+                  ) * net_qty,
                   last_mark_time_utc   = ?
                 WHERE status       = 'open'
                   AND contract_id  = ?
@@ -394,6 +404,8 @@ class Storage:
                 RETURNING position_id
                 """,
                 [
+                    mark.mark_price,
+                    mark.mark_price,
                     mark.mark_price,
                     mark.mark_price,
                     mark.last_mark_time_utc,

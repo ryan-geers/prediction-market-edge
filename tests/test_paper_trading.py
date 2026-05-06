@@ -152,6 +152,43 @@ def test_mark_open_positions_updates_after_second_run(tmp_path: Path) -> None:
     assert abs(row[0] - entry_mark) > 1e-9, "mark should differ from entry-day snapshot"
 
 
+def test_no_position_remark_uses_no_mid_for_stop_loss(tmp_path: Path) -> None:
+    """A persisted NO position should be re-marked with 1 - YES mid before exits."""
+    settings = Settings(paper_stop_loss_pct=0.15, paper_exit_on_flip=False)
+    st = Storage(tmp_path / "t.duckdb")
+
+    no_signal = _base_signal().model_copy(
+        update={
+            "decision": "enter_long_no",
+            "edge_bps": -1200.0,
+            "bid_price": 0.45,
+            "market_implied_probability": 0.50,
+            "run_id": "run-no",
+        }
+    )
+    _, positions_run1 = simulate_paper_trades([no_signal], settings)
+    assert len(positions_run1) == 1
+    assert positions_run1[0].direction == "no"
+    st.insert_positions(positions_run1)
+
+    # YES mid rallies to 0.80, so the NO mark falls to 0.20 and breaches the stop.
+    snap = _snapshot(mid_price=0.80)
+    st.mark_open_positions(
+        [PositionMark(contract_id="CPI-TEST", venue="KALSHI", mark_price=snap.mid_price)]
+    )
+    open_positions = st.get_open_positions()
+    st.close()
+
+    assert len(open_positions) == 1
+    assert abs(open_positions[0].mark_price - 0.20) < 1e-9
+    assert open_positions[0].unrealized_pnl < 0
+
+    closes = apply_exits(open_positions, [], [snap], settings)
+    assert len(closes) == 1
+    assert closes[0].close_reason == "stop_loss"
+    assert abs(closes[0].avg_exit_price - 0.20) < 1e-9
+
+
 # ── Phase 2: apply_exits tests ─────────────────────────────────────────────────
 
 def test_apply_exits_flip_closes_yes_position_on_no_signal():

@@ -17,6 +17,8 @@ def _open_position(
     venue: str = "KALSHI",
     avg_entry_price: float = 0.50,
     net_qty: float = 50.0,
+    mark_price: float | None = None,
+    direction: str | None = None,
 ) -> PaperPositionRecord:
     return PaperPositionRecord(
         position_id=position_id,
@@ -27,8 +29,9 @@ def _open_position(
         net_qty=net_qty,
         avg_entry_price=avg_entry_price,
         unrealized_pnl=0.0,
-        mark_price=avg_entry_price,
+        mark_price=avg_entry_price if mark_price is None else mark_price,
         status="open",
+        direction=direction,  # type: ignore[arg-type]
     )
 
 
@@ -54,6 +57,35 @@ def test_mark_updates_mark_price_and_unrealized_pnl(tmp_path: Path) -> None:
     assert abs(row[0] - 0.60) < 1e-9
     # unrealized_pnl = (mark_price - avg_entry_price) * net_qty = (0.60 - 0.50) * 50 = 5.0
     assert abs(row[1] - 5.0) < 1e-9
+
+
+def test_mark_uses_no_price_for_no_positions(tmp_path: Path) -> None:
+    """NO positions are carried in NO-price space, not raw YES mid space."""
+    st = Storage(tmp_path / "t.duckdb")
+    pos = _open_position(
+        direction="no",
+        avg_entry_price=0.55,
+        mark_price=0.50,
+        net_qty=50.0,
+    )
+    st.insert_positions([pos])
+
+    mark = PositionMark(contract_id="CPI-TEST", venue="KALSHI", mark_price=0.80)
+    updated = st.mark_open_positions([mark])
+    st.close()
+
+    assert updated == 1
+    con = duckdb.connect(str(tmp_path / "t.duckdb"))
+    row = con.execute(
+        "SELECT mark_price, unrealized_pnl FROM paper_positions WHERE position_id = ?",
+        [pos.position_id],
+    ).fetchone()
+    con.close()
+
+    assert row is not None
+    expected_no_mark = 0.20
+    assert abs(row[0] - expected_no_mark) < 1e-9
+    assert abs(row[1] - ((expected_no_mark - pos.avg_entry_price) * pos.net_qty)) < 1e-9
 
 
 def test_mark_does_not_update_closed_positions(tmp_path: Path) -> None:
