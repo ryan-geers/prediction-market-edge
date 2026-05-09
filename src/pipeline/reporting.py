@@ -283,9 +283,30 @@ def _weekly_payload(con: duckdb.DuckDBPyConnection, since: datetime) -> dict[str
         [since],
     ).fetchall()
 
+    # Latest signal per unique contract in the window — one row per contract,
+    # showing what the most recent evaluation decided and why.
+    latest_signals = con.execute(
+        """
+        SELECT contract_id, contract_label, decision,
+               model_probability, market_implied_probability, edge_bps,
+               decision_reason, thesis_module, vig_adjusted_threshold_bps,
+               event_time_utc
+        FROM (
+          SELECT *,
+                 ROW_NUMBER() OVER (PARTITION BY contract_id ORDER BY event_time_utc DESC) AS rn
+          FROM signals
+          WHERE event_time_utc >= ?
+        ) t
+        WHERE rn = 1
+        ORDER BY thesis_module, contract_id
+        """,
+        [since],
+    ).fetchall()
+
     return {
         "since": since,
         "signal_by_thesis": signal_by_thesis,
+        "latest_signals": latest_signals,
         "decisions": decisions,
         "contracts_n": contracts_n,
         "signals_n": signals_n,
@@ -485,6 +506,86 @@ def _position_rationale(
         )
 
 
+def _signal_narrative(
+    decision: str,
+    mp: float | None,
+    mip: float | None,
+    eb: float | None,
+    threshold_bps: float | None,
+    reason: Any,
+) -> str:
+    """
+    Plain-English one-liner covering every possible signal outcome:
+    - Actionable (YES/NO): delegates to _position_rationale.
+    - Hold — health gate: explains the model was blocked.
+    - Hold — edge too small: explains the gap wasn't wide enough.
+    - Hold — unknown type: explains no model applies.
+    """
+    if decision in ("enter_long_yes", "enter_long_no"):
+        return _position_rationale(decision, mp, mip, eb, reason)
+
+    pairs = _reason_pairs(reason)
+    contract_type = pairs.get("contract_type", "")
+    our_pct = (mp or 0.0) * 100
+    market_pct = (mip or 0.0) * 100
+    eb_val = eb or 0.0
+    thresh = float(threshold_bps or 300)
+
+    # Health gate — model was blocked before edge was even evaluated.
+    if "blocked_by_health_gate" in str(reason):
+        if contract_type == "unemployment":
+            return (
+                "No action — the unemployment model's reliability check failed "
+                "(validation error was suspiciously low or prediction was out of a sensible range), "
+                "so we stood aside rather than trade on a potentially broken signal."
+            )
+        if contract_type == "cpi":
+            return (
+                "No action — the CPI model's reliability check failed "
+                "(RMSE near zero, likely caused by a training data issue), "
+                "so we stood aside."
+            )
+        return (
+            "No action — model health check failed; trading was blocked to avoid "
+            "acting on unreliable predictions."
+        )
+
+    # Unknown contract type.
+    if contract_type == "unknown" or contract_type == "":
+        return (
+            "No action — this contract type isn't recognised by any of our models, "
+            "so no prediction was made."
+        )
+
+    # Edge below threshold — model ran fine but the gap wasn't wide enough.
+    pred_details = ""
+    if contract_type == "unemployment":
+        pred_raw = pairs.get("pred_unrate")
+        thresh_raw = pairs.get("threshold")
+        try:
+            pred_str = f"{float(pred_raw):.2f}%"
+        except (TypeError, ValueError):
+            pred_str = "unknown"
+        try:
+            thresh_str = f"{float(thresh_raw):.1f}%"
+        except (TypeError, ValueError):
+            thresh_str = "the threshold"
+        pred_details = f"unemployment at {pred_str} vs the {thresh_str} contract threshold — "
+    elif contract_type == "cpi":
+        pred_raw = pairs.get("pred_cpi_mom_pct")
+        try:
+            pred_str = f"{float(pred_raw):.2f}% CPI month-over-month"
+        except (TypeError, ValueError):
+            pred_str = "an uncertain CPI reading"
+        pred_details = f"{pred_str} — "
+
+    return (
+        f"No action — model predicted {pred_details}"
+        f"our estimate of {our_pct:.0f}% vs the market's {market_pct:.0f}% "
+        f"left only {abs(eb_val):.0f} bps of edge, short of the {thresh:.0f} bps minimum needed to trade."
+    )
+
+
 def _format_weekly_md(w: dict[str, Any]) -> str:
     since: datetime = w["since"]
     now = datetime.now(timezone.utc)
@@ -619,6 +720,29 @@ def _format_weekly_md(w: dict[str, Any]) -> str:
 
     lines.extend(["---", ""])
 
+    # Signals considered — one row per unique contract, latest decision + plain-English rationale
+    ls = w.get("latest_signals") or []
+    lines.extend([f"## Signals Considered ({len(ls)} unique contract{'s' if len(ls) != 1 else ''})", ""])
+    if not ls:
+        lines.append("_No signals evaluated this period._")
+    else:
+        _DECISION_ICON = {
+            "enter_long_yes": "YES",
+            "enter_long_no": "NO",
+            "hold": "HOLD",
+        }
+        for row in ls:
+            cid, label, decision, mp, mip, eb, reason, thesis, thresh_bps, ts = row
+            icon = _DECISION_ICON.get(str(decision), str(decision))
+            narrative = _signal_narrative(decision, mp, mip, eb, thresh_bps, reason)
+            lines.append(f"**`{icon}` — {cid}**")
+            if label and label != cid:
+                lines.append(f"_{label}_  ")
+            lines.append(narrative)
+            lines.append(f"<small>Thesis: {thesis or '—'} · Last evaluated: {_fmt_ts(ts)}</small>")
+            lines.append("")
+    lines.extend(["---", ""])
+
     # Signal summary — compact
     lines.extend(["## Signal Summary", ""])
     lines.append(
@@ -693,6 +817,40 @@ def _pnl_color(x: Any) -> str:
         return "pos" if float(x) > 0 else ("neg" if float(x) < 0 else "")
     except (TypeError, ValueError):
         return ""
+
+
+_DECISION_BADGE: dict[str, tuple[str, str]] = {
+    "enter_long_yes": ("#16a34a", "YES"),
+    "enter_long_no":  ("#dc2626", "NO"),
+    "hold":           ("#6b7280", "HOLD"),
+}
+
+
+def _build_signals_considered_html(w: dict[str, Any]) -> str:
+    ls = w.get("latest_signals") or []
+    if not ls:
+        return "<p class='muted'>No signals evaluated this period.</p>"
+
+    cards = []
+    for row in ls:
+        cid, label, decision, mp, mip, eb, reason, thesis, thresh_bps, ts = row
+        colour, badge_text = _DECISION_BADGE.get(str(decision), ("#6b7280", str(decision).upper()))
+        narrative = _signal_narrative(decision, mp, mip, eb, thresh_bps, reason)
+        sub = f'<span class="muted small">{_escape(str(label))}</span><br/>' if label and label != cid else ""
+        cards.append(
+            f'<div style="border:1px solid #e5e5e5;border-radius:6px;padding:0.9rem 1rem;margin-bottom:0.75rem">'
+            f'<div style="display:flex;align-items:center;gap:0.6rem;margin-bottom:0.4rem">'
+            f'<span style="background:{colour};color:#fff;font-size:0.72rem;font-weight:700;'
+            f'padding:0.15em 0.55em;border-radius:3px;letter-spacing:0.05em">{badge_text}</span>'
+            f'<strong style="font-size:0.95rem">{_escape(str(cid))}</strong>'
+            f'</div>'
+            f'{sub}'
+            f'<p style="margin:0.25rem 0 0.4rem;font-size:0.9rem;color:#374151">{_escape(narrative)}</p>'
+            f'<p class="muted small">Thesis: {_escape(str(thesis or "—"))} &nbsp;·&nbsp; '
+            f'Last evaluated: {_escape(_fmt_ts(ts))}</p>'
+            f'</div>'
+        )
+    return "\n".join(cards)
 
 
 def _format_weekly_html(w: dict[str, Any]) -> str:
@@ -867,6 +1025,11 @@ small{{font-size:0.82rem;font-weight:400;color:#555}}
 {'<h3>New Opens</h3><table><thead><tr><th>Contract</th><th>Opened</th><th>Qty @ Entry</th><th>≈ Notional</th><th>Thesis</th><th>Decision</th><th>Edge (bps)</th></tr></thead><tbody>' + (rows_nw or '<tr><td colspan="7" class="muted">(none)</td></tr>') + '</tbody></table>' if osw else ''}
 {'<h3>Exits</h3><table><thead><tr><th>Contract</th><th>Realized PnL</th><th>Closed</th></tr></thead><tbody>' + (rows_ex or '<tr><td colspan="3" class="muted">(none)</td></tr>') + '</tbody></table>' if ew else ''}
 {'<h3>Fills</h3><table><thead><tr><th>Contract</th><th>Fill Price</th><th>Qty</th><th>≈ Notional</th></tr></thead><tbody>' + (rows_f or '<tr><td colspan="4" class="muted">(none)</td></tr>') + '</tbody></table>' if rf else ''}
+
+<hr/>
+
+<h2>Signals Considered</h2>
+{_build_signals_considered_html(w)}
 
 <hr/>
 
