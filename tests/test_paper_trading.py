@@ -320,7 +320,7 @@ def _make_position(
 
 
 def test_apply_dedup_disabled_by_default():
-    """When paper_allow_add_to_position=False all candidates pass through unchanged."""
+    """When paper_allow_add_to_position=False duplicate candidates are skipped."""
     settings = Settings(paper_allow_add_to_position=False)
     candidate = _make_position()
     existing = _make_position(position_id="existing")
@@ -328,7 +328,7 @@ def test_apply_dedup_disabled_by_default():
 
     new_positions, add_tos = apply_dedup([candidate], existing_by_key, settings)
 
-    assert new_positions == [candidate]
+    assert new_positions == []
     assert add_tos == []
 
 
