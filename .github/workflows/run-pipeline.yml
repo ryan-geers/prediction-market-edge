@@ -16,6 +16,7 @@ jobs:
       BLS_API_KEY: ${{ secrets.BLS_API_KEY }}
       BEA_API_KEY: ${{ secrets.BEA_API_KEY }}
       KALSHI_API_KEY: ${{ secrets.KALSHI_API_KEY }}
+      KALSHI_KEY_ID: ${{ secrets.KALSHI_KEY_ID }}
       SAVE_RUN_ARTIFACTS: "true"
     steps:
       - name: Checkout

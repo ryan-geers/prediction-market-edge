@@ -48,7 +48,10 @@ class EconomicIndicatorsThesis(ThesisModule):
         self.fred = FredConnector(api_key=settings.fred_api_key)
         self.bls = BlsConnector(api_key=settings.bls_api_key)
         self.bea = BeaConnector(api_key=settings.bea_api_key)
-        self.kalshi = KalshiConnector(api_key=settings.kalshi_api_key)
+        self.kalshi = KalshiConnector(
+            api_key=settings.kalshi_api_key,
+            key_id=settings.kalshi_key_id,
+        )
 
     def ingest(self) -> dict[str, list[dict]]:
         macro = self.fred.fetch() + self.bls.fetch() + self.bea.fetch()

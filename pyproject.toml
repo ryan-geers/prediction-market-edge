@@ -15,6 +15,7 @@ dependencies = [
   "duckdb>=1.0.0",
   "pandas>=2.2.2",
   "streamlit>=1.44.0",
+  "cryptography>=42.0.0",
 ]
 
 [project.optional-dependencies]

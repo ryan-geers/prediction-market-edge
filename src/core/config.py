@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     # Fallback UNRATE threshold when it cannot be parsed from the Kalshi ticker.
     unemployment_threshold_pct: float = 4.2
 
+    # Kalshi RSA auth — key_id is the UUID from the Kalshi dashboard;
+    # kalshi_api_key holds the PEM private key used to sign requests.
+    kalshi_key_id: str | None = None
     kalshi_api_key: str | None = None
     polymarket_api_key: str | None = None
     fred_api_key: str | None = None

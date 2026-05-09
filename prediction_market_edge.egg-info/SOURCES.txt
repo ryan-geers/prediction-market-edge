@@ -28,6 +28,7 @@ src/pipeline/__init__.py
 src/pipeline/email_digest.py
 src/pipeline/paper_trading.py
 src/pipeline/parquet_archive.py
+src/pipeline/report_prune.py
 src/pipeline/reporting.py
 src/pipeline/run.py
 src/pipeline/state_check.py
@@ -37,6 +38,7 @@ src/theses/registry.py
 src/theses/economic_indicators/__init__.py
 src/theses/economic_indicators/model.py
 src/theses/economic_indicators/module.py
+src/theses/economic_indicators/unemployment_model.py
 src/theses/fda_trials/__init__.py
 src/theses/fda_trials/module.py
 src/theses/sports_mlb/__init__.py
@@ -54,6 +56,9 @@ tests/test_http_client.py
 tests/test_paper_trading.py
 tests/test_parquet_archive.py
 tests/test_pipeline_smoke.py
+tests/test_report_prune.py
 tests/test_state_check.py
+tests/test_storage.py
 tests/test_storage_integrity.py
+tests/test_unemployment_model.py
 tests/test_workflows_yaml.py
