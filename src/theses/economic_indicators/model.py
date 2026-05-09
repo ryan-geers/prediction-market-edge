@@ -121,7 +121,15 @@ def build_training_frame_from_history(
             return build_training_frame(fallback_macro)  # type: ignore[arg-type]
         return train[["release_date", "ppi", "pcepi", "unrate", "cpi_mom_next"]].sort_values("release_date")
 
-    # No usable CPI level series: fall back to proxy (shifted composite), still named cpi_mom_next
+    # CPIAUCSL is unavailable or has too few observations to build a real m/m target.
+    # The proxy target below is a shifted linear combination of the same features used
+    # for training, which creates near-perfect target leakage (RMSE ≈ 0, prediction ≈ 0).
+    # Log a clear warning so operators know the forecast will be blocked by the health gate.
+    LOGGER.warning(
+        "CPIAUCSL not available in training data — proxy target will be used. "
+        "This produces target leakage (RMSE ≈ 0) and will be blocked by the model health gate. "
+        "Check that FRED fetch_history returns recent CPIAUCSL data (sort_order=desc)."
+    )
     train = pivot[feature_cols].copy()
     proxy = (0.16 * (train["PPIACO"] / 100) + 0.27 * (train["PCEPI"] / 100) - 0.04 * train["UNRATE"] + 0.22)
     train["cpi_mom_next"] = (proxy * 0.45 + 0.08).shift(-1)

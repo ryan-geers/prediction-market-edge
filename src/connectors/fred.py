@@ -24,13 +24,13 @@ class FredConnector(Connector):
         payload = self.http_client.get_json(self.BASE_URL, params=params)
         return self.parse_latest_value(payload)
 
-    def fetch_series_history(self, series_id: str, limit: int = 60) -> list[dict[str, Any]]:
+    def fetch_series_history(self, series_id: str, limit: int = 1200) -> list[dict[str, Any]]:
         params = {
             "series_id": series_id,
             "api_key": self.api_key or "",
             "file_type": "json",
-            "sort_order": "asc",
-            "limit": limit,
+            "sort_order": "desc",  # most-recent first so limit selects recent data, not 1913-era data
+            "limit": limit,        # 1200 months (~100 years) covers the full PCEPI history from 1959
         }
         payload = self.http_client.get_json(self.BASE_URL, params=params)
         observations = payload.get("observations", [])
@@ -77,9 +77,9 @@ class FredConnector(Connector):
     def fetch_history(self) -> list[dict[str, Any]]:
         try:
             rows = (
-                self.fetch_series_history("PPIACO", limit=96)
-                + self.fetch_series_history("UNRATE", limit=96)
-                + self.fetch_series_history("CPIAUCSL", limit=96)
+                self.fetch_series_history("PPIACO")
+                + self.fetch_series_history("UNRATE")
+                + self.fetch_series_history("CPIAUCSL")
             )
             if rows:
                 return rows
