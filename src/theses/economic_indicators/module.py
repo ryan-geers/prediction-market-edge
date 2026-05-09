@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 
 from src.connectors.bea import BeaConnector
@@ -70,6 +71,22 @@ class EconomicIndicatorsThesis(ThesisModule):
             regression.prediction, threshold_pct=cpi_mom_threshold_pct, scale=12.0
         )
         release_date = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        # Model health: block trading when metrics are degenerate.
+        # val_rmse < 1e-6 indicates target leakage or a zero-variance training set.
+        # A zero prediction on the raw m/m scale is a reliable sign the training
+        # frame is malformed (e.g. daily rows producing all-zero shift targets).
+        val_rmse = regression.rmse
+        model_healthy = val_rmse >= 1e-6 and abs(regression.prediction) > 1e-6
+        if not model_healthy:
+            logging.getLogger(__name__).warning(
+                "Model health check failed — blocking all actionable signals. "
+                "val_rmse=%.2e, prediction=%.6f. "
+                "Check that training frame is monthly and has non-zero CPI targets.",
+                val_rmse,
+                regression.prediction,
+            )
+
         return {
             "model_probability": model_probability,
             "predicted_cpi_mom_pct": regression.prediction,
@@ -89,6 +106,7 @@ class EconomicIndicatorsThesis(ThesisModule):
             "backtest": regression.backtest,
             "release_date": release_date,
             "macro_history_count": features["macro_history_count"],
+            "model_healthy": model_healthy,
         }
 
     def generate_signals(
@@ -97,6 +115,7 @@ class EconomicIndicatorsThesis(ThesisModule):
         signals: list[SignalRecord] = []
         snapshots: list[MarketSnapshotRecord] = []
         model_probability = forecast["model_probability"]
+        model_healthy = forecast.get("model_healthy", True)
 
         for contract in forecast["market"]:
             bid = float(contract["best_bid"])
@@ -104,12 +123,17 @@ class EconomicIndicatorsThesis(ThesisModule):
             mid = (bid + ask) / 2
             spread = _spread_bps(bid, ask)
             edge_bps = (model_probability - mid) * 10000
-            decision = "hold"
-            if edge_bps > self.settings.edge_threshold_bps:
+
+            if not model_healthy:
+                decision = "hold"
+            elif edge_bps > self.settings.edge_threshold_bps:
                 decision = "enter_long_yes"
             elif edge_bps < (-1 * self.settings.edge_threshold_bps):
                 decision = "enter_long_no"
+            else:
+                decision = "hold"
 
+            health_note = "" if model_healthy else ";model_healthy=false;blocked_by_health_gate"
             signal = SignalRecord(
                 run_id=run_id,
                 thesis_module=self.name,
@@ -130,6 +154,7 @@ class EconomicIndicatorsThesis(ThesisModule):
                     f"val_rmse={forecast['validation_rmse']:.4f};"
                     f"wf_val_rmse={forecast.get('walk_forward_val_rmse', 0):.4f};"
                     f"history_rows={forecast['macro_history_count']}"
+                    f"{health_note}"
                 ),
                 model_version="econ_regression_v2",
                 feature_set_version="econ_features_v2",

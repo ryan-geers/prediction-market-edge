@@ -153,6 +153,7 @@ def apply_dedup(
     candidates: list[PaperPositionRecord],
     existing_by_key: dict[tuple[str, str, str], PaperPositionRecord],
     settings: Settings,
+    open_counts_by_key: dict[tuple[str, str, str], int] | None = None,
 ) -> tuple[list[PaperPositionRecord], list[AddToPosition]]:
     """
     Deduplicate new-entry candidates against currently-open positions.
@@ -166,28 +167,51 @@ def apply_dedup(
     When ``paper_allow_add_to_position`` is True, existing positions are
     VWAP-merged with the new fill instead of dropped.
 
+    ``open_counts_by_key`` provides the total count of open rows per
+    (contract_id, venue, direction) key, including rows whose direction is NULL
+    (stored under key (contract_id, venue, "")). This is used to enforce
+    ``settings.paper_max_open_per_key`` even when old positions have a NULL
+    direction and are therefore absent from ``existing_by_key``.
+
     Closed candidates (eod_close mode) and direction-less rows always pass
     through as new inserts regardless of the flag.
 
     Returns:
-        new_positions  — list of PaperPositionRecord to insert fresh into DB
-        add_tos        — list of AddToPosition (VWAP merge ops) to apply to existing rows
+        new_positions      — list of PaperPositionRecord to insert fresh into DB
+        add_tos            — list of AddToPosition (VWAP merge ops) to apply to existing rows
+        acted_signal_ids   — set of signal_ids for candidates that were opened or merged
+                             (i.e. NOT dropped by dedup). Use to filter which orders to persist.
     """
     new_positions: list[PaperPositionRecord] = []
     add_tos: list[AddToPosition] = []
+    acted_signal_ids: set[str] = set()
+    max_open = int(settings.paper_max_open_per_key)
 
     for pos in candidates:
         # Closed positions (eod_close) or direction-less rows always become new inserts.
         if pos.status == "closed" or pos.direction is None:
             new_positions.append(pos)
+            if pos.signal_id:
+                acted_signal_ids.add(pos.signal_id)
             continue
 
         key = (pos.contract_id, pos.venue, pos.direction)
+
+        # Count-based guard: block if total open rows (including null-direction legacy
+        # entries) already meets the configured ceiling.
+        if open_counts_by_key is not None:
+            total_open = (open_counts_by_key.get(key, 0)
+                          + open_counts_by_key.get((pos.contract_id, pos.venue, ""), 0))
+            if total_open >= max_open:
+                continue
+
         existing = existing_by_key.get(key)
 
         if existing is None:
             # No open position for this contract — always insert.
             new_positions.append(pos)
+            if pos.signal_id:
+                acted_signal_ids.add(pos.signal_id)
         elif settings.paper_allow_add_to_position:
             # VWAP: new_avg = (old_avg * old_qty + fill * new_qty) / (old_qty + new_qty)
             new_qty = existing.net_qty + pos.net_qty
@@ -205,9 +229,11 @@ def apply_dedup(
                     new_avg_entry_price=new_avg,
                 )
             )
+            if pos.signal_id:
+                acted_signal_ids.add(pos.signal_id)
         # else: paper_allow_add_to_position is False and position already exists — skip.
 
-    return new_positions, add_tos
+    return new_positions, add_tos, acted_signal_ids
 
 
 def simulate_paper_trades(

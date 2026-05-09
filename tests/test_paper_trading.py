@@ -283,16 +283,18 @@ def _make_position(
 
 
 def test_apply_dedup_disabled_by_default():
-    """When paper_allow_add_to_position=False all candidates pass through unchanged."""
+    """When paper_allow_add_to_position=False, a duplicate candidate is dropped (not inserted)."""
     settings = Settings(paper_allow_add_to_position=False)
     candidate = _make_position()
     existing = _make_position(position_id="existing")
     existing_by_key = {("CPI-TEST", "KALSHI", "yes"): existing}
 
-    new_positions, add_tos = apply_dedup([candidate], existing_by_key, settings)
+    new_positions, add_tos, acted = apply_dedup([candidate], existing_by_key, settings)
 
-    assert new_positions == [candidate]
+    # Duplicate blocked: no new insert, no VWAP merge, signal_id not in acted set.
+    assert new_positions == []
     assert add_tos == []
+    assert acted == set()
 
 
 def test_apply_dedup_no_existing_inserts_new():
@@ -300,10 +302,11 @@ def test_apply_dedup_no_existing_inserts_new():
     settings = Settings(paper_allow_add_to_position=True)
     candidate = _make_position()
 
-    new_positions, add_tos = apply_dedup([candidate], {}, settings)
+    new_positions, add_tos, acted = apply_dedup([candidate], {}, settings)
 
     assert new_positions == [candidate]
     assert add_tos == []
+    assert candidate.signal_id in acted
 
 
 def test_apply_dedup_same_contract_same_direction_merges():
@@ -313,10 +316,11 @@ def test_apply_dedup_same_contract_same_direction_merges():
     candidate = _make_position(position_id="new-fill", avg_entry_price=0.60, net_qty=40.0)
     existing_by_key = {("CPI-TEST", "KALSHI", "yes"): existing}
 
-    new_positions, add_tos = apply_dedup([candidate], existing_by_key, settings)
+    new_positions, add_tos, acted = apply_dedup([candidate], existing_by_key, settings)
 
     assert new_positions == []
     assert len(add_tos) == 1
+    assert candidate.signal_id in acted
 
     op = add_tos[0]
     assert op.position_id == "existing"
@@ -333,10 +337,11 @@ def test_apply_dedup_different_direction_creates_new_row():
     candidate_no = _make_position(position_id="no-cand", direction="no")
     existing_by_key = {("CPI-TEST", "KALSHI", "yes"): existing_yes}
 
-    new_positions, add_tos = apply_dedup([candidate_no], existing_by_key, settings)
+    new_positions, add_tos, acted = apply_dedup([candidate_no], existing_by_key, settings)
 
     assert new_positions == [candidate_no]
     assert add_tos == []
+    assert candidate_no.signal_id in acted
 
 
 def test_apply_dedup_closed_candidate_passes_through():
@@ -346,10 +351,11 @@ def test_apply_dedup_closed_candidate_passes_through():
     closed_candidate = _make_position(position_id="eod-closed", status="closed")
     existing_by_key = {("CPI-TEST", "KALSHI", "yes"): existing}
 
-    new_positions, add_tos = apply_dedup([closed_candidate], existing_by_key, settings)
+    new_positions, add_tos, acted = apply_dedup([closed_candidate], existing_by_key, settings)
 
     assert new_positions == [closed_candidate]
     assert add_tos == []
+    assert closed_candidate.signal_id in acted
 
 
 def test_apply_dedup_multiple_contracts_independent():
@@ -364,10 +370,26 @@ def test_apply_dedup_multiple_contracts_independent():
         ("CPI-B", "KALSHI", "yes"): ex_b,
     }
 
-    new_positions, add_tos = apply_dedup([cand_a, cand_c], existing_by_key, settings)
+    new_positions, add_tos, acted = apply_dedup([cand_a, cand_c], existing_by_key, settings)
 
     # CPI-A merges, CPI-C is new (no existing), CPI-B untouched
     assert len(new_positions) == 1
     assert new_positions[0].contract_id == "CPI-C"
     assert len(add_tos) == 1
     assert add_tos[0].position_id == "ex-a"
+    assert cand_a.signal_id in acted
+    assert cand_c.signal_id in acted
+
+
+def test_apply_dedup_max_open_per_key_blocks_null_direction_legacy():
+    """open_counts_by_key sentinel blocks new entries even when legacy positions have NULL direction."""
+    settings = Settings(paper_allow_add_to_position=False, paper_max_open_per_key=1)
+    candidate = _make_position(direction="no")
+    # Simulate a legacy null-direction open position counted under the "" sentinel.
+    open_counts_by_key = {("CPI-TEST", "KALSHI", ""): 1}
+
+    new_positions, add_tos, acted = apply_dedup([candidate], {}, settings, open_counts_by_key)
+
+    assert new_positions == []
+    assert add_tos == []
+    assert acted == set()

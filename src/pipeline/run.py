@@ -82,22 +82,47 @@ def run_pipeline(thesis_name: str = "economic_indicators") -> tuple[str, Path | 
     # Phase 3: dedup — merge candidates into existing open positions when enabled.
     # Exclude positions just closed this run so they aren't treated as merge targets.
     closed_ids = {c.position_id for c in closes}
+    live_positions = [p for p in open_positions if p.position_id not in closed_ids]
+
     existing_by_key = {
         (p.contract_id, p.venue, p.direction): p
-        for p in open_positions
-        if p.direction is not None and p.position_id not in closed_ids
+        for p in live_positions
+        if p.direction is not None
     }
-    new_positions, add_tos = apply_dedup(candidate_positions, existing_by_key, settings)
+
+    # Count ALL live open rows per (contract_id, venue, direction) key, including
+    # legacy rows with direction=NULL (stored under the "" sentinel). This lets
+    # apply_dedup() enforce paper_max_open_per_key even when old null-direction
+    # positions are invisible to the key-lookup dict above.
+    open_counts_by_key: dict[tuple[str, str, str], int] = {}
+    for p in live_positions:
+        k = (p.contract_id, p.venue, p.direction or "")
+        open_counts_by_key[k] = open_counts_by_key.get(k, 0) + 1
+
+    new_positions, add_tos, acted_signal_ids = apply_dedup(
+        candidate_positions, existing_by_key, settings, open_counts_by_key
+    )
     for add_to in add_tos:
         storage.add_to_position(add_to)
     LOGGER.info(
         "Dedup: %d new positions, %d merged into existing", len(new_positions), len(add_tos)
     )
 
+    # Only record orders that resulted in an actual position open or VWAP merge.
+    # Dropping dedup-blocked orders keeps paper_orders and paper_positions counts
+    # consistent and prevents phantom fills from inflating the weekly digest totals.
+    filled_orders = [o for o in orders if o.signal_id in acted_signal_ids]
+    LOGGER.info(
+        "Orders: %d generated, %d inserted (dedup dropped %d)",
+        len(orders),
+        len(filled_orders),
+        len(orders) - len(filled_orders),
+    )
+
     storage.insert_model_forecasts(forecast_records)
     storage.insert_signals(signals)
     storage.insert_snapshots(snapshots)
-    storage.insert_orders(orders)
+    storage.insert_orders(filled_orders)
     storage.insert_positions(new_positions)
 
     manifest.completed_at_utc = datetime.now(timezone.utc)

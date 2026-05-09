@@ -94,6 +94,18 @@ def build_training_frame_from_history(
     if len(pivot) < 3:
         return build_training_frame(fallback_macro)  # type: ignore[arg-type]
 
+    # Resample to monthly so shift(-1) produces a true month-over-month change.
+    # Without this, mixed-frequency daily rows cause shift(-1) to compute day-to-day
+    # changes (≈ 0 for ffilled monthly series), collapsing the training target to zero
+    # and making OLS return near-zero coefficients.
+    pivot = pivot.resample("MS").last()
+    pivot[feature_cols] = pivot[feature_cols].ffill()
+    if CPI_SERIES_FRED in pivot.columns:
+        pivot[CPI_SERIES_FRED] = pivot[CPI_SERIES_FRED].ffill()
+    pivot = pivot.dropna(subset=feature_cols, how="any")
+    if len(pivot) < 3:
+        return build_training_frame(fallback_macro)  # type: ignore[arg-type]
+
     if CPI_SERIES_FRED in pivot.columns and pivot[CPI_SERIES_FRED].notna().sum() >= 3:
         cpi = pivot[CPI_SERIES_FRED]
         # One-month-ahead m/m % change realized at t+1 (label for row t uses info through t)

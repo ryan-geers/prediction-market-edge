@@ -26,8 +26,12 @@ class Settings(BaseSettings):
     paper_stop_loss_pct: float | None = None # e.g. 0.15 = close at -15% of cost basis; None = disabled
     paper_close_on_settle: bool = True       # close when connector reports contract settled
 
-    # Phase 3 dedup knob — off by default to preserve existing behaviour until enabled deliberately
+    # Phase 3 dedup knobs
     paper_allow_add_to_position: bool = False
+    # Maximum number of open positions allowed per (contract_id, venue, direction) key.
+    # Enforced in apply_dedup() regardless of whether individual positions have a null
+    # direction (which would otherwise make them invisible to the key-based dedup dict).
+    paper_max_open_per_key: int = 1
 
     # Set True in CI / production to write run reports and model artifact files.
     # Leave False (default) for local runs to avoid cluttering data/ with files every invocation.

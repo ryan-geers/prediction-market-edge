@@ -351,6 +351,9 @@ class Storage:
         Updates net_qty, avg_entry_price, and recomputes unrealized_pnl from the
         current mark_price (which Phase 1 already refreshed this run).
         Returns True if a row was updated.
+
+        mark_price stores YES mid; apply direction-aware formula consistent with
+        mark_open_positions().
         """
         rows = self.con.execute(
             """
@@ -358,15 +361,21 @@ class Storage:
             SET
               net_qty         = ?,
               avg_entry_price = ?,
-              unrealized_pnl  = (mark_price - ?) * ?
+              unrealized_pnl  = CASE
+                                  WHEN direction = 'no'
+                                  THEN ((1.0 - mark_price) - ?) * ?
+                                  ELSE (mark_price - ?) * ?
+                                END
             WHERE position_id = ?
             RETURNING position_id
             """,
             [
                 op.new_net_qty,
                 op.new_avg_entry_price,
-                op.new_avg_entry_price,
-                op.new_net_qty,
+                op.new_avg_entry_price,  # NO branch avg entry
+                op.new_net_qty,          # NO branch qty
+                op.new_avg_entry_price,  # YES branch avg entry
+                op.new_net_qty,          # YES branch qty
                 op.position_id,
             ],
         ).fetchall()
@@ -378,6 +387,10 @@ class Storage:
         Returns the total number of rows updated.
         Uses RETURNING to get an accurate count because DuckDB always reports
         rowcount=-1 for UPDATE statements.
+
+        mark_price always stores the YES mid. The unrealized PnL formula differs by
+        direction: YES positions gain when YES mid rises; NO positions gain when YES
+        mid falls (i.e. when (1 - yes_mid) rises above the NO entry price).
         """
         updated = 0
         for mark in marks:
@@ -386,7 +399,11 @@ class Storage:
                 UPDATE paper_positions
                 SET
                   mark_price           = ?,
-                  unrealized_pnl       = (? - avg_entry_price) * net_qty,
+                  unrealized_pnl       = CASE
+                                           WHEN direction = 'no'
+                                           THEN ((1.0 - ?) - avg_entry_price) * net_qty
+                                           ELSE (? - avg_entry_price) * net_qty
+                                         END,
                   last_mark_time_utc   = ?
                 WHERE status       = 'open'
                   AND contract_id  = ?
@@ -395,7 +412,8 @@ class Storage:
                 """,
                 [
                     mark.mark_price,
-                    mark.mark_price,
+                    mark.mark_price,  # NO branch: 1 - yes_mid
+                    mark.mark_price,  # YES branch: yes_mid
                     mark.last_mark_time_utc,
                     mark.contract_id,
                     mark.venue,
@@ -414,6 +432,10 @@ class Storage:
         close_reason='dedup_consolidated' and realized_pnl=0 so they no longer
         appear in the open book.
 
+        Also handles legacy positions with a NULL direction (created before the
+        direction column migration): within each (contract_id, venue) group of
+        null-direction rows, only the oldest is kept open; the rest are closed.
+
         Returns a list of summary dicts, one per consolidated group.
         """
         groups = self.con.execute(
@@ -423,6 +445,12 @@ class Storage:
             WHERE status = 'open' AND direction IS NOT NULL
             GROUP BY contract_id, venue, direction
             HAVING COUNT(*) > 1
+            UNION ALL
+            SELECT contract_id, venue, NULL AS direction, COUNT(*) AS cnt
+            FROM paper_positions
+            WHERE status = 'open' AND direction IS NULL
+            GROUP BY contract_id, venue
+            HAVING COUNT(*) > 1
             """
         ).fetchall()
 
@@ -430,18 +458,32 @@ class Storage:
         now = datetime.now(timezone.utc)
 
         for contract_id, venue, direction, cnt in groups:
-            rows = self.con.execute(
-                """
-                SELECT position_id, net_qty, avg_entry_price, mark_price
-                FROM paper_positions
-                WHERE status = 'open'
-                  AND contract_id = ?
-                  AND venue       = ?
-                  AND direction   = ?
-                ORDER BY opened_at_utc ASC NULLS LAST
-                """,
-                [contract_id, venue, direction],
-            ).fetchall()
+            if direction is None:
+                rows = self.con.execute(
+                    """
+                    SELECT position_id, net_qty, avg_entry_price, mark_price
+                    FROM paper_positions
+                    WHERE status = 'open'
+                      AND contract_id = ?
+                      AND venue       = ?
+                      AND direction   IS NULL
+                    ORDER BY opened_at_utc ASC NULLS LAST
+                    """,
+                    [contract_id, venue],
+                ).fetchall()
+            else:
+                rows = self.con.execute(
+                    """
+                    SELECT position_id, net_qty, avg_entry_price, mark_price
+                    FROM paper_positions
+                    WHERE status = 'open'
+                      AND contract_id = ?
+                      AND venue       = ?
+                      AND direction   = ?
+                    ORDER BY opened_at_utc ASC NULLS LAST
+                    """,
+                    [contract_id, venue, direction],
+                ).fetchall()
 
             if len(rows) <= 1:
                 continue
@@ -454,8 +496,15 @@ class Storage:
             else:
                 vwap_price = rows[0][2]
 
+            # mark_price stores YES mid; use direction-aware PnL formula.
             mark = rows[0][3]
-            new_unrealized = (mark - vwap_price) * total_qty if mark is not None else 0.0
+            if mark is not None:
+                if direction == "no":
+                    new_unrealized = ((1.0 - mark) - vwap_price) * total_qty
+                else:
+                    new_unrealized = (mark - vwap_price) * total_qty
+            else:
+                new_unrealized = 0.0
 
             self.con.execute(
                 """

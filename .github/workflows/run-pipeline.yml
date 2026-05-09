@@ -41,6 +41,10 @@ jobs:
           restore-keys: |
             pme-state-
 
+      - name: Consolidate duplicate positions
+        run: |
+          pme consolidate-positions
+
       - name: Run pipeline
         run: |
           pme run --thesis economic_indicators
