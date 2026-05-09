@@ -391,6 +391,100 @@ def _parse_reason(reason: Any) -> str:
     return " · ".join(parts)
 
 
+def _reason_pairs(reason: Any) -> dict[str, str]:
+    """Parse semicolon-delimited key=value reason string into a plain dict."""
+    pairs: dict[str, str] = {}
+    for part in str(reason or "").split(";"):
+        if "=" in part:
+            k, _, v = part.partition("=")
+            pairs[k.strip()] = v.strip()
+    return pairs
+
+
+def _position_rationale(
+    decision: str,
+    mp: float | None,
+    mip: float | None,
+    eb: float | None,
+    reason: Any,
+) -> str:
+    """
+    One or two plain-English sentences explaining why a position was taken.
+    Written for a non-technical reader — the statistical detail stays in
+    Signal factors below.
+    """
+    if not decision or decision == "hold":
+        return ""
+    pairs = _reason_pairs(reason)
+    contract_type = pairs.get("contract_type", "")
+    our_pct = (mp or 0.0) * 100
+    market_pct = (mip or 0.0) * 100
+    edge_abs = abs(eb or 0.0)
+    bet = "YES" if decision == "enter_long_yes" else "NO"
+
+    if contract_type == "unemployment":
+        pred_raw = pairs.get("pred_unrate")
+        thresh_raw = pairs.get("threshold")
+        try:
+            pred_str = f"{float(pred_raw):.2f}%"
+        except (TypeError, ValueError):
+            pred_str = "unknown"
+        try:
+            thresh_str = f"{float(thresh_raw):.1f}%"
+        except (TypeError, ValueError):
+            thresh_str = "the threshold"
+
+        if decision == "enter_long_yes":
+            return (
+                f"The model forecasts next month's unemployment at {pred_str} — above the {thresh_str} "
+                f"this contract pays out on. The market sees a {market_pct:.0f}% chance it crosses "
+                f"that line; our model puts it at {our_pct:.0f}%, so we're betting YES it does."
+            )
+        else:
+            return (
+                f"The model forecasts next month's unemployment at {pred_str} — below the {thresh_str} "
+                f"this contract pays out on. The market sees a {market_pct:.0f}% chance it crosses "
+                f"that line; our model puts it at only {our_pct:.0f}%, so we're betting NO it doesn't."
+            )
+
+    elif contract_type == "cpi" or "pred_cpi_mom_pct" in pairs:
+        pred_raw = pairs.get("pred_cpi_mom_pct")
+        try:
+            pred_cpi = float(pred_raw)
+            pred_str = f"{pred_cpi:.2f}%"
+            pred_qual = "only " if pred_cpi < 0.25 else ""
+        except (TypeError, ValueError):
+            pred_str = "unknown"
+            pred_qual = ""
+
+        if decision == "enter_long_no":
+            return (
+                f"The model expects CPI to rise {pred_qual}{pred_str} month-over-month — "
+                f"below the 0.3% threshold this contract pays out on. "
+                f"The market thinks there's a {market_pct:.0f}% chance inflation clears that bar; "
+                f"we see it as just {our_pct:.0f}%, so we're betting NO it stays below."
+            )
+        else:
+            return (
+                f"The model expects CPI to rise {pred_str} month-over-month — "
+                f"above the 0.3% threshold this contract pays out on. "
+                f"The market prices a {market_pct:.0f}% chance of that; "
+                f"we see {our_pct:.0f}%, so we're betting YES it clears the bar."
+            )
+
+    else:
+        # Generic fallback for any other contract type.
+        if decision == "enter_long_yes":
+            return (
+                f"Our model estimates a {our_pct:.0f}% probability this resolves YES, "
+                f"against the market's {market_pct:.0f}% — betting YES on the gap."
+            )
+        return (
+            f"Our model estimates only a {our_pct:.0f}% chance this resolves YES "
+            f"vs the market's {market_pct:.0f}% — betting NO on the gap."
+        )
+
+
 def _format_weekly_md(w: dict[str, Any]) -> str:
     since: datetime = w["since"]
     now = datetime.now(timezone.utc)
@@ -444,8 +538,11 @@ def _format_weekly_md(w: dict[str, Any]) -> str:
             mpf = float(mp) * 100 if mp is not None else None
             mipf = float(mip) * 100 if mip is not None else None
 
+            rationale = _position_rationale(decision, mp, mip, eb, reason)
             lines.append(f"### {cid}")
             lines.append(f"- **Decision:** `{decision or '—'}`")
+            if rationale:
+                lines.append(f"- **Why:** {rationale}")
             lines.append(f"- **Entry:** {epf:.4f} × {nqf:.2f} shares ≈ ${notion:.2f} notional")
             lines.append(f"- **Unrealized PnL:** {_fmtp(upnl)}")
             if mpf is not None and mipf is not None:
@@ -643,8 +740,16 @@ def _format_weekly_html(w: dict[str, Any]) -> str:
             else ""
         )
         reason_row = (
-            f'<tr><td>Signal factors</td><td class="muted small">{_escape(_parse_reason(reason))}</td></tr>'
+            f'<tr><td class="muted small" colspan="2" style="padding-top:0.4rem">'
+            f'<em>Signal factors:</em> {_escape(_parse_reason(reason))}</td></tr>'
             if reason
+            else ""
+        )
+        rationale = _position_rationale(decision, mp, mip, eb, reason)
+        rationale_row = (
+            f'<tr><td colspan="2" style="padding:0.5rem 0 0.25rem 0;color:#374151;font-size:0.9rem">'
+            f'{_escape(rationale)}</td></tr>'
+            if rationale
             else ""
         )
         upnl_cls = _pnl_color(upnl)
@@ -653,6 +758,7 @@ def _format_weekly_html(w: dict[str, Any]) -> str:
             f'<div class="holding-title">{_escape(str(cid))}</div>'
             f'<table class="kv"><tbody>'
             f'<tr><td>Decision</td><td><code>{_escape(str(decision or "—"))}</code></td></tr>'
+            f'{rationale_row}'
             f'<tr><td>Entry</td><td>{epf:.4f} × {nqf:.2f} shares ≈ <strong>${notion:.2f}</strong> notional</td></tr>'
             f'<tr><td>Unrealized PnL</td><td><span class="{upnl_cls}">{_escape(_fmtp(upnl))}</span></td></tr>'
             f'{model_mkt}'

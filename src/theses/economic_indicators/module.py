@@ -184,7 +184,13 @@ class EconomicIndicatorsThesis(ThesisModule):
                 # strike gets its own correctly-calibrated probability.
                 threshold = contract.get("threshold") or self.settings.unemployment_threshold_pct
                 if un_healthy and un_reg is not None:
-                    model_probability = unrate_to_yes_probability(un_reg.prediction, threshold=threshold)
+                    # Scale the sigmoid by model quality: steeper when RMSE is low
+                    # (confident), flatter when RMSE is high (uncertain).
+                    # scale = min(30, 3 / rmse) → rmse=0.1 → 30, rmse=0.89 → 3.4
+                    un_scale = min(30.0, 3.0 / un_reg.rmse) if un_reg.rmse >= 1e-6 else 5.0
+                    model_probability = unrate_to_yes_probability(
+                        un_reg.prediction, threshold=threshold, scale=un_scale
+                    )
                 else:
                     model_probability = 0.5  # neutral when model is unhealthy
                 is_healthy = un_healthy
