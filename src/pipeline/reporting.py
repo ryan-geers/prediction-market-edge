@@ -303,10 +303,24 @@ def _weekly_payload(con: duckdb.DuckDBPyConnection, since: datetime) -> dict[str
         [since],
     ).fetchall()
 
+    # Detect whether any signals in the window were generated from stub/fallback
+    # data (Kalshi API was unreachable and hard-coded prices were used instead).
+    stub_contracts_row = con.execute(
+        """
+        SELECT COUNT(DISTINCT contract_id)
+        FROM signals
+        WHERE event_time_utc >= ?
+          AND decision_reason LIKE '%data_source=kalshi_stub%'
+        """,
+        [since],
+    ).fetchone()
+    stub_contract_count = int(stub_contracts_row[0]) if stub_contracts_row else 0
+
     return {
         "since": since,
         "signal_by_thesis": signal_by_thesis,
         "latest_signals": latest_signals,
+        "stub_contract_count": stub_contract_count,
         "decisions": decisions,
         "contracts_n": contracts_n,
         "signals_n": signals_n,
@@ -601,6 +615,18 @@ def _format_weekly_md(w: dict[str, Any]) -> str:
         "---",
         "",
     ]
+
+    # Stub-data warning — shown at the very top so it can't be missed.
+    stub_n = w.get("stub_contract_count", 0) or 0
+    if stub_n:
+        lines.extend([
+            "> [!WARNING]",
+            f"> **USING SYNTHETIC MARKET DATA — KALSHI API UNREACHABLE**",
+            f"> {stub_n} contract{'s' if stub_n != 1 else ''} this week ran on hard-coded fallback prices, not live Kalshi quotes.",
+            "> Signals, edge figures, and any positions opened are based on **fake bid/ask data**.",
+            "> Check that `KALSHI_API_KEY` is set in CI secrets and that the Kalshi API is reachable.",
+            "",
+        ])
 
     # Overview table
     lifetime_sum = w.get("lifetime_realized_sum") or 0.0
@@ -973,6 +999,19 @@ def _format_weekly_html(w: dict[str, Any]) -> str:
         edge_parts.append(f"std {_escape(_fmtbps(w['edge_std']))}")
     edge_parts.extend([f"min {_escape(_fmtbps(w['edge_min']))}", f"max {_escape(_fmtbps(w['edge_max']))}"])
 
+    stub_n = w.get("stub_contract_count", 0) or 0
+    stub_banner_html = ""
+    if stub_n:
+        stub_banner_html = (
+            f'<div class="stub-warning">'
+            f'<strong>⚠️ SYNTHETIC MARKET DATA — KALSHI API UNREACHABLE</strong><br/>'
+            f'{stub_n} contract{"s" if stub_n != 1 else ""} this week ran on hard-coded fallback prices, '
+            f'not live Kalshi quotes. Signals, edge figures, and any positions opened are based on '
+            f'<strong>fake bid/ask data</strong>. '
+            f'Check that <code>KALSHI_API_KEY</code> is set in CI secrets and that the Kalshi API is reachable.'
+            f'</div>'
+        )
+
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"/>
 <title>Weekly Edge Digest · {_escape(since_str)}–{_escape(now_str)}</title>
@@ -1003,12 +1042,16 @@ table.kv td{{border:none;padding:0.2rem 0.5rem 0.2rem 0}}
 .small{{font-size:0.82rem}}
 code{{background:#f3f3f3;padding:0.1em 0.35em;border-radius:3px;font-size:0.85rem}}
 small{{font-size:0.82rem;font-weight:400;color:#555}}
+.stub-warning{{background:#fef2f2;border:2px solid #dc2626;border-radius:6px;
+  padding:1rem 1.25rem;margin:1rem 0 1.5rem;color:#7f1d1d;font-size:0.9rem;line-height:1.6}}
+.stub-warning code{{background:#fecaca;color:#7f1d1d}}
 </style>
 </head><body>
 
 <h1>Weekly Edge Digest</h1>
 <p class="subtitle">{_escape(since_str)} – {_escape(now_str)} &nbsp;·&nbsp; {runs_n} pipeline run{'s' if runs_n != 1 else ''} &nbsp;·&nbsp; {signals_n} signal{'s' if signals_n != 1 else ''} evaluated</p>
 
+{stub_banner_html}
 <h2>Overview</h2>
 <div class="stats">{stats_html}</div>
 

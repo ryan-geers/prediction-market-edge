@@ -143,8 +143,9 @@ def test_parse_threshold_kxeconstatu3():
     assert _parse_threshold("KXECONSTATU3-26NOV-T5.5") == pytest.approx(5.5)
 
 
-def test_parse_threshold_no_t_suffix():
-    assert _parse_threshold("CPI-MAY-OVER-0.3") is None
+def test_parse_threshold_over_format():
+    # OVER-{value} format used by CPI contracts is now parsed correctly.
+    assert _parse_threshold("CPI-MAY-OVER-0.3") == pytest.approx(0.3)
 
 
 def test_parse_threshold_integer():

@@ -53,7 +53,15 @@ class EconomicIndicatorsThesis(ThesisModule):
     def ingest(self) -> dict[str, list[dict]]:
         macro = self.fred.fetch() + self.bls.fetch() + self.bea.fetch()
         macro_history = self.fred.fetch_history() + self.bls.fetch_history() + self.bea.fetch_history()
-        market = self.kalshi.fetch_markets(["KXCPI", "KXU3"])
+        # Try all known series ticker variants for each contract type.
+        # The connector de-dupes and falls back to a generic open-market fetch
+        # if all named series return empty.
+        market = self.kalshi.fetch_markets([
+            # CPI variants (different Kalshi naming across seasons)
+            "KXCPI", "KXMCPI", "CPIM", "CPI",
+            # Unemployment variants
+            "KXU3", "KXECONSTATU3",
+        ])
         return {"macro": macro, "macro_history": macro_history, "market": market}
 
     def build_features(self, raw: dict[str, list[dict]]) -> dict[str, float]:
@@ -247,6 +255,7 @@ class EconomicIndicatorsThesis(ThesisModule):
                     f"model_vs_mid_edge_bps={edge_bps:.2f};"
                     + decision_extras
                     + health_note
+                    + (";data_source=kalshi_stub" if contract.get("is_stub") else "")
                 ),
                 model_version=model_version,
                 feature_set_version=feature_version,

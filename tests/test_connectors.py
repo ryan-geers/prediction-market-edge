@@ -50,8 +50,8 @@ def test_kalshi_normalization_cpi():
     connector = KalshiConnector()
     row = connector._normalize_market({"ticker": "CPI-MAY-OVER-0.3", "title": "CPI", "yes_bid": 44, "yes_ask": 48}, series_ticker="KXCPI")
     assert row["contract_type"] == "cpi"
-    # CPI tickers use OVER-0.3 format, not -T{value}; threshold is None and handled statically by the module.
-    assert row["threshold"] is None
+    # _parse_threshold now extracts the threshold from the OVER-{value} format.
+    assert row["threshold"] == pytest.approx(0.3)
 
 
 def test_kalshi_fallback_stubs_have_both_types():
