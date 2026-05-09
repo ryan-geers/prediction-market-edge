@@ -8,9 +8,10 @@ from src.connectors.base import Connector
 
 LOGGER = logging.getLogger(__name__)
 
-# Kalshi main trading API — economic/financial markets (CPI, unemployment, Fed, etc.)
-# NOT api.elections.kalshi.com, which only serves political/election contracts.
-_BASE_URL = "https://api.kalshi.com/trade-api/v2"
+# Kalshi main trading API — serves ALL markets (economic, political, sports, etc.)
+# Despite the legacy "elections" subdomain on api.elections.kalshi.com, that host
+# also covers all markets.  The recommended production host is external-api.kalshi.com.
+_BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 
 # Confirmed series tickers on api.kalshi.com
 UNRATE_SERIES = {"KXU3", "KXECONSTATU3"}
@@ -66,8 +67,11 @@ def _parse_threshold(ticker: str) -> float | None:
 
 def _build_rsa_signature(private_key_pem: str, timestamp_ms: str, method: str, path: str) -> str:
     """
-    Sign `timestamp_ms + method.upper() + path` with the RSA private key using
-    PKCS#1 v1.5 / SHA-256, as required by api.kalshi.com.
+    Sign `timestamp_ms + method.upper() + path` with RSA-PSS / SHA-256, as
+    required by the Kalshi Trade API v2.
+
+    Important: `path` must be the bare URL path without query parameters.
+    E.g. sign "/trade-api/v2/markets", not "/trade-api/v2/markets?status=open".
 
     Returns the Base64-encoded signature string.
     """
@@ -76,8 +80,14 @@ def _build_rsa_signature(private_key_pem: str, timestamp_ms: str, method: str, p
 
     pem_bytes = private_key_pem.encode() if isinstance(private_key_pem, str) else private_key_pem
     private_key = serialization.load_pem_private_key(pem_bytes, password=None)
-    message = (timestamp_ms + method.upper() + path).encode()
-    signature = private_key.sign(message, padding.PKCS1v15(), hashes.SHA256())
+    # Strip any accidentally-included query string before signing.
+    clean_path = path.split("?")[0]
+    message = (timestamp_ms + method.upper() + clean_path).encode()
+    signature = private_key.sign(
+        message,
+        padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.DIGEST_LENGTH),
+        hashes.SHA256(),
+    )
     return base64.b64encode(signature).decode()
 
 
@@ -126,19 +136,31 @@ class KalshiConnector(Connector):
         }
 
     def _normalize_market(self, item: dict[str, Any], series_ticker: str = "") -> dict[str, Any]:
-        bid_raw = item.get("yes_bid")
-        ask_raw = item.get("yes_ask")
-        if bid_raw is None:
-            bid_raw = item.get("best_bid")
-        if ask_raw is None:
-            ask_raw = item.get("best_ask")
+        # Kalshi returns prices in several formats depending on API version:
+        #   yes_bid / yes_ask       — legacy integer cents (0-100)
+        #   yes_bid_dollars         — new fixed-point dollars (0.00–1.00)
+        #   best_bid / best_ask     — generic cents fallback
+        bid_raw = (
+            item.get("yes_bid_dollars")     # new fixed-point format (already 0-1)
+            or item.get("yes_bid")          # legacy cents (0-100)
+            or item.get("best_bid")
+        )
+        ask_raw = (
+            item.get("yes_ask_dollars")
+            or item.get("yes_ask")
+            or item.get("best_ask")
+        )
         bid = float(bid_raw if bid_raw is not None else 44)
         ask = float(ask_raw if ask_raw is not None else 48)
+        # Normalise cents → probability (only needed for legacy integer format).
         if bid > 1:
             bid /= 100
         if ask > 1:
             ask /= 100
-        last = float(item.get("last_price") or ((bid + ask) / 2))
+        last_raw = item.get("last_price_dollars") or item.get("last_price")
+        last = float(last_raw) if last_raw is not None else (bid + ask) / 2
+        if last > 1:
+            last /= 100
         ticker = item.get("ticker", "CPI-MAY-OVER-0.3")
 
         resolved_series = series_ticker or item.get("series_ticker", "") or ""
@@ -166,27 +188,37 @@ class KalshiConnector(Connector):
         for market in markets:
             if market.get("status") in {"closed", "settled"}:
                 continue
-            if market.get("yes_bid") is None and market.get("best_bid") is None:
+            # Accept either legacy-cents or new fixed-point bid fields.
+            has_bid = (
+                market.get("yes_bid") is not None
+                or market.get("yes_bid_dollars") is not None
+                or market.get("best_bid") is not None
+            )
+            if not has_bid:
                 continue
             normalized.append(self._normalize_market(market, series_ticker=series_ticker))
         return normalized
 
-    def _get_markets(self, params: dict[str, Any]) -> list[dict[str, Any]]:
-        """GET /markets with RSA auth; logs full response details on failure for debugging."""
+    def _get_markets(self, params: dict[str, Any], authenticated: bool = False) -> list[dict[str, Any]]:
+        """
+        GET /markets — public endpoint, no auth required for market data reads.
+
+        `authenticated=True` adds RSA headers (only needed for portfolio/trading
+        endpoints, NOT for reading market prices).
+        """
         series_ticker = params.get("series_ticker", "")
         path = "/trade-api/v2/markets"
+        headers = self._auth_headers(method="GET", path=path) if authenticated else {}
         try:
             response = self.http_client.session.get(
                 f"{self.BASE_URL}/markets",
                 params=params,
-                headers=self._auth_headers(method="GET", path=path),
+                headers=headers,
                 timeout=self.http_client.timeout_seconds,
             )
             if response.status_code != 200:
-                # Log response body (truncated) so operators can diagnose auth/endpoint issues.
                 LOGGER.warning(
-                    "Kalshi GET /markets returned HTTP %d (params=%s). "
-                    "Response: %.300s",
+                    "Kalshi GET /markets returned HTTP %d (params=%s). Response: %.300s",
                     response.status_code,
                     params,
                     response.text,
