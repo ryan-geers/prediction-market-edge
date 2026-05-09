@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from src.connectors.bea import BeaConnector
 from src.connectors.bls import BlsConnector
 from src.connectors.fred import FredConnector
@@ -36,9 +38,27 @@ def test_bea_fallback_without_api_key():
 
 def test_kalshi_normalization():
     connector = KalshiConnector()
-    row = connector._normalize_market({"ticker": "ABC", "title": "X", "yes_bid": 40, "yes_ask": 45, "last_price": 43})
+    row = connector._normalize_market({"ticker": "KXU3-26MAY-T4.8", "title": "X", "yes_bid": 40, "yes_ask": 45, "last_price": 43}, series_ticker="KXU3")
     assert row["best_bid"] == 0.4
     assert row["best_ask"] == 0.45
+    assert row["contract_type"] == "unemployment"
+    assert row["threshold"] == 4.8
+    assert row["series_ticker"] == "KXU3"
+
+
+def test_kalshi_normalization_cpi():
+    connector = KalshiConnector()
+    row = connector._normalize_market({"ticker": "CPI-MAY-OVER-0.3", "title": "CPI", "yes_bid": 44, "yes_ask": 48}, series_ticker="KXCPI")
+    assert row["contract_type"] == "cpi"
+    # CPI tickers use OVER-0.3 format, not -T{value}; threshold is None and handled statically by the module.
+    assert row["threshold"] is None
+
+
+def test_kalshi_fallback_stubs_have_both_types():
+    stubs = KalshiConnector._fallback_stubs()
+    types = {s["contract_type"] for s in stubs}
+    assert "cpi" in types
+    assert "unemployment" in types
 
 
 def test_fred_parse_fixture():

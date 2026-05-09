@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # Leave False (default) for local runs to avoid cluttering data/ with files every invocation.
     save_run_artifacts: bool = False
 
+    # Fallback UNRATE threshold when it cannot be parsed from the Kalshi ticker.
+    unemployment_threshold_pct: float = 4.2
+
     kalshi_api_key: str | None = None
     polymarket_api_key: str | None = None
     fred_api_key: str | None = None
