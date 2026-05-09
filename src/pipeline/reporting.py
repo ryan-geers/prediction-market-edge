@@ -261,6 +261,7 @@ def _weekly_payload(con: duckdb.DuckDBPyConnection, since: datetime) -> dict[str
         FROM paper_positions AS p
         LEFT JOIN signals AS s ON p.signal_id = s.signal_id
         WHERE p.opened_at_utc >= ?
+          AND COALESCE(p.close_reason, '') != 'dedup_consolidated'
         ORDER BY p.opened_at_utc DESC NULLS LAST
         LIMIT 25
         """,
