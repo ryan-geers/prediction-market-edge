@@ -77,7 +77,10 @@ def run_pipeline(thesis_name: str = "economic_indicators") -> tuple[str, Path | 
     closed = storage.close_positions(closes)
     LOGGER.info("Closed %d positions this run", closed)
 
-    orders, candidate_positions = thesis.paper_trade(signals)
+    # Sort by absolute edge descending so the highest-conviction signals are
+    # processed first when the portfolio cap (paper_max_total_open) is active.
+    signals_sorted = sorted(signals, key=lambda s: abs(s.edge_bps or 0), reverse=True)
+    orders, candidate_positions = thesis.paper_trade(signals_sorted)
 
     # Phase 3: dedup — merge candidates into existing open positions when enabled.
     # Exclude positions just closed this run so they aren't treated as merge targets.

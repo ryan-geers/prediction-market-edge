@@ -186,6 +186,12 @@ def apply_dedup(
     add_tos: list[AddToPosition] = []
     acted_signal_ids: set[str] = set()
     max_open = int(settings.paper_max_open_per_key)
+    max_total = int(settings.paper_max_total_open)
+
+    # Current portfolio size = sum of all open-count values (each key is one row).
+    total_currently_open: int = (
+        sum(open_counts_by_key.values()) if open_counts_by_key else 0
+    )
 
     for pos in candidates:
         # Closed positions (eod_close) or direction-less rows always become new inserts.
@@ -208,6 +214,9 @@ def apply_dedup(
         existing = existing_by_key.get(key)
 
         if existing is None:
+            # Portfolio-level cap: don't open new positions when the book is full.
+            if max_total > 0 and (total_currently_open + len(new_positions)) >= max_total:
+                continue
             # No open position for this contract — always insert.
             new_positions.append(pos)
             if pos.signal_id:

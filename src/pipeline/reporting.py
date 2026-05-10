@@ -469,6 +469,13 @@ def _position_rationale(
         except (TypeError, ValueError):
             thresh_str = "the threshold"
 
+        try:
+            pred_val = float(pred_raw)
+            thresh_val = float(thresh_raw)
+            pred_above = pred_val > thresh_val
+        except (TypeError, ValueError):
+            pred_above = None
+
         if decision == "enter_long_yes":
             return (
                 f"The model forecasts next month's unemployment at {pred_str} — above the {thresh_str} "
@@ -476,11 +483,22 @@ def _position_rationale(
                 f"that line; our model puts it at {our_pct:.0f}%, so we're betting YES it does."
             )
         else:
-            return (
-                f"The model forecasts next month's unemployment at {pred_str} — below the {thresh_str} "
-                f"this contract pays out on. The market sees a {market_pct:.0f}% chance it crosses "
-                f"that line; our model puts it at only {our_pct:.0f}%, so we're betting NO it doesn't."
-            )
+            if pred_above:
+                # Model agrees the threshold will probably be crossed — but the market
+                # prices that probability even higher, so there's value on the NO side.
+                return (
+                    f"The model gives a {our_pct:.0f}% chance unemployment exceeds {thresh_str} — "
+                    f"but the market prices it higher still at {market_pct:.0f}%. "
+                    f"We think the market is overcharging for that YES outcome, "
+                    f"so we're taking the NO side to capture that premium."
+                )
+            else:
+                return (
+                    f"The model forecasts next month's unemployment at {pred_str} — "
+                    f"below the {thresh_str} this contract pays out on. "
+                    f"The market sees a {market_pct:.0f}% chance it crosses that line; "
+                    f"our model puts it at only {our_pct:.0f}%, so we're betting NO it doesn't."
+                )
 
     elif contract_type == "cpi" or "pred_cpi_mom_pct" in pairs:
         pred_raw = pairs.get("pred_cpi_mom_pct")
@@ -653,7 +671,13 @@ def _format_weekly_md(w: dict[str, Any]) -> str:
 
     # Open positions — each gets its own sub-section
     oh = w.get("open_holdings") or []
-    lines.extend([f"## Open Positions ({len(oh)})", ""])
+    _oh_total = open_pos  # from the overview count (all open in DB)
+    _oh_label = (
+        f"{_oh_total} total, showing {len(oh)}"
+        if len(oh) < _oh_total
+        else str(len(oh))
+    )
+    lines.extend([f"## Open Positions ({_oh_label})", ""])
     if not oh:
         lines.append("_No open positions._")
     else:
@@ -1057,7 +1081,7 @@ small{{font-size:0.82rem;font-weight:400;color:#555}}
 
 <hr/>
 
-<h2>Open Positions ({len(oh)})</h2>
+<h2>Open Positions ({f"{open_pos} total, showing {len(oh)}" if len(oh) < open_pos else len(oh)})</h2>
 <div class="holdings">{holdings_html}</div>
 
 <hr/>

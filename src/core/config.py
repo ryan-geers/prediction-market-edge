@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     # Enforced in apply_dedup() regardless of whether individual positions have a null
     # direction (which would otherwise make them invisible to the key-based dedup dict).
     paper_max_open_per_key: int = 1
+    # Hard cap on total open positions across the entire portfolio.
+    # When this many positions are already open, new entries are skipped (highest-edge
+    # candidates are admitted first because signals are sorted by |edge_bps| before dedup).
+    # 0 = unlimited (original behaviour).
+    paper_max_total_open: int = 10
 
     # Set True in CI / production to write run reports and model artifact files.
     # Leave False (default) for local runs to avoid cluttering data/ with files every invocation.
