@@ -54,6 +54,44 @@ def test_kalshi_normalization_cpi():
     assert row["threshold"] == pytest.approx(0.3)
 
 
+def test_kalshi_normalization_preserves_zero_dollar_prices():
+    connector = KalshiConnector()
+    row = connector._normalize_market(
+        {
+            "ticker": "CPI-MAY-OVER-0.3",
+            "title": "CPI",
+            "yes_bid_dollars": 0,
+            "yes_bid": 44,
+            "yes_ask_dollars": 0.01,
+            "yes_ask": 48,
+            "last_price_dollars": 0,
+            "last_price": 45,
+        },
+        series_ticker="KXCPI",
+    )
+    assert row["best_bid"] == 0.0
+    assert row["best_ask"] == pytest.approx(0.01)
+    assert row["last_trade"] == 0.0
+
+
+def test_kalshi_parse_markets_skips_incomplete_quotes():
+    connector = KalshiConnector()
+    rows = connector.parse_markets(
+        {
+            "markets": [
+                {
+                    "ticker": "CPI-MAY-OVER-0.3",
+                    "title": "CPI",
+                    "yes_bid": 44,
+                    "status": "open",
+                }
+            ]
+        },
+        series_ticker="KXCPI",
+    )
+    assert rows == []
+
+
 def test_kalshi_fallback_stubs_have_both_types():
     stubs = KalshiConnector._fallback_stubs()
     types = {s["contract_type"] for s in stubs}
