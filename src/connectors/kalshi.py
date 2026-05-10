@@ -26,6 +26,23 @@ _CPI_SERIES_CANDIDATES = ["KXCPI", "KXMCPI", "CPIM", "CPI"]
 _UNRATE_SERIES_CANDIDATES = ["KXU3", "KXECONSTATU3"]
 
 
+def _first_price_value(item: dict[str, Any], *fields: str) -> Any | None:
+    """Return the first populated price field without treating 0 as missing."""
+    for field in fields:
+        value = item.get(field)
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _normalize_price(raw: Any) -> float:
+    price = float(raw)
+    # Normalise cents → probability (only needed for legacy integer format).
+    if price > 1:
+        price /= 100
+    return price
+
+
 def _classify_series(series_ticker: str) -> str:
     if series_ticker in UNRATE_SERIES:
         return "unemployment"
@@ -140,27 +157,20 @@ class KalshiConnector(Connector):
         #   yes_bid / yes_ask       — legacy integer cents (0-100)
         #   yes_bid_dollars         — new fixed-point dollars (0.00–1.00)
         #   best_bid / best_ask     — generic cents fallback
-        bid_raw = (
-            item.get("yes_bid_dollars")     # new fixed-point format (already 0-1)
-            or item.get("yes_bid")          # legacy cents (0-100)
-            or item.get("best_bid")
+        bid_raw = _first_price_value(
+            item,
+            "yes_bid_dollars",     # new fixed-point format (already 0-1)
+            "yes_bid",             # legacy cents (0-100)
+            "best_bid",
         )
-        ask_raw = (
-            item.get("yes_ask_dollars")
-            or item.get("yes_ask")
-            or item.get("best_ask")
-        )
-        bid = float(bid_raw if bid_raw is not None else 44)
-        ask = float(ask_raw if ask_raw is not None else 48)
-        # Normalise cents → probability (only needed for legacy integer format).
-        if bid > 1:
-            bid /= 100
-        if ask > 1:
-            ask /= 100
-        last_raw = item.get("last_price_dollars") or item.get("last_price")
-        last = float(last_raw) if last_raw is not None else (bid + ask) / 2
-        if last > 1:
-            last /= 100
+        ask_raw = _first_price_value(item, "yes_ask_dollars", "yes_ask", "best_ask")
+        if bid_raw is None or ask_raw is None:
+            raise ValueError(f"Kalshi market {item.get('ticker', '<unknown>')} is missing bid/ask")
+
+        bid = _normalize_price(bid_raw)
+        ask = _normalize_price(ask_raw)
+        last_raw = _first_price_value(item, "last_price_dollars", "last_price")
+        last = _normalize_price(last_raw) if last_raw is not None else (bid + ask) / 2
         ticker = item.get("ticker", "CPI-MAY-OVER-0.3")
 
         resolved_series = series_ticker or item.get("series_ticker", "") or ""
@@ -188,15 +198,14 @@ class KalshiConnector(Connector):
         for market in markets:
             if market.get("status") in {"closed", "settled"}:
                 continue
-            # Accept either legacy-cents or new fixed-point bid fields.
-            has_bid = (
-                market.get("yes_bid") is not None
-                or market.get("yes_bid_dollars") is not None
-                or market.get("best_bid") is not None
-            )
-            if not has_bid:
+            bid_raw = _first_price_value(market, "yes_bid_dollars", "yes_bid", "best_bid")
+            ask_raw = _first_price_value(market, "yes_ask_dollars", "yes_ask", "best_ask")
+            if bid_raw is None or ask_raw is None:
                 continue
-            normalized.append(self._normalize_market(market, series_ticker=series_ticker))
+            try:
+                normalized.append(self._normalize_market(market, series_ticker=series_ticker))
+            except (TypeError, ValueError) as exc:
+                LOGGER.warning("Kalshi: skipping malformed market %s: %s", market.get("ticker"), exc)
         return normalized
 
     def _get_markets(self, params: dict[str, Any], authenticated: bool = False) -> list[dict[str, Any]]:
