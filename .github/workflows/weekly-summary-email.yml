@@ -103,6 +103,17 @@ jobs:
             data/reports/weekly_digest.html
           if-no-files-found: warn
 
+      # Weekly point-in-time DB snapshot — permanent backup independent of the cache.
+      # If the cache is ever lost, download this artifact and place it at data/pme.duckdb
+      # before the next pipeline run to restore accumulated history.
+      - name: Upload DB snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: pme-db-weekly-${{ github.run_id }}
+          path: data/pme.duckdb
+          if-no-files-found: warn
+          retention-days: 90
+
       - name: Send SMTP email
         if: steps.dry_flags.outputs.dry_run != 'true'
         env:

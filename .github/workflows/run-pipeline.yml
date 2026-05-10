@@ -69,6 +69,19 @@ jobs:
             data/reports
           key: pme-state-${{ github.run_id }}
 
+      # Rolling DB snapshot — always reflects the most recent completed pipeline run.
+      # Overwrites the previous copy so only one artifact slot is consumed.
+      # Recovery: download this artifact and place pme.duckdb at data/pme.duckdb
+      # before triggering the next pipeline run to restore accumulated history.
+      - name: Upload rolling DB snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: pme-db-latest
+          path: data/pme.duckdb
+          if-no-files-found: warn
+          overwrite: true
+          retention-days: 90
+
       - name: Write run summary
         run: |
           {
