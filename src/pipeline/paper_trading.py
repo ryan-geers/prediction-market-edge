@@ -21,6 +21,28 @@ if TYPE_CHECKING:
     from src.core.config import Settings
 
 
+def contract_family(contract_id: str) -> str:
+    """
+    Bucket key for diversification: first dash-separated segment of the contract id.
+
+    Examples: ``KXCPI-26MAY-T0.3`` → ``KXCPI``, ``CPI-MAY-OVER-0.3`` → ``CPI``.
+    """
+    if not contract_id:
+        return ""
+    return contract_id.split("-", 1)[0]
+
+
+def open_positions_by_family(positions: list[PaperPositionRecord]) -> dict[str, int]:
+    """Count open rows per :func:`contract_family` (used for portfolio caps)."""
+    out: dict[str, int] = {}
+    for p in positions:
+        if p.status != "open":
+            continue
+        fam = contract_family(p.contract_id)
+        out[fam] = out.get(fam, 0) + 1
+    return out
+
+
 def _apply_slippage_to_yes_ask(ask: float, slippage_bps: float) -> float:
     adj = ask * (1.0 + slippage_bps / 10000.0)
     return min(0.999, max(0.001, adj))
@@ -154,6 +176,7 @@ def apply_dedup(
     existing_by_key: dict[tuple[str, str, str], PaperPositionRecord],
     settings: Settings,
     open_counts_by_key: dict[tuple[str, str, str], int] | None = None,
+    open_family_counts: dict[str, int] | None = None,
 ) -> tuple[list[PaperPositionRecord], list[AddToPosition]]:
     """
     Deduplicate new-entry candidates against currently-open positions.
@@ -173,6 +196,10 @@ def apply_dedup(
     ``settings.paper_max_open_per_key`` even when old positions have a NULL
     direction and are therefore absent from ``existing_by_key``.
 
+    ``open_family_counts`` seeds :func:`contract_family` tallies so
+    ``paper_max_open_per_contract_family`` can block additional opens in the
+    same series (e.g. many ``KXCPI-*`` strikes).
+
     Closed candidates (eod_close mode) and direction-less rows always pass
     through as new inserts regardless of the flag.
 
@@ -187,6 +214,8 @@ def apply_dedup(
     acted_signal_ids: set[str] = set()
     max_open = int(settings.paper_max_open_per_key)
     max_total = int(settings.paper_max_total_open)
+    max_per_family = int(settings.paper_max_open_per_contract_family)
+    family_tally: dict[str, int] = dict(open_family_counts) if open_family_counts else {}
 
     # Current portfolio size = sum of all open-count values (each key is one row).
     total_currently_open: int = (
@@ -217,8 +246,15 @@ def apply_dedup(
             # Portfolio-level cap: don't open new positions when the book is full.
             if max_total > 0 and (total_currently_open + len(new_positions)) >= max_total:
                 continue
+            if max_per_family > 0:
+                fam = contract_family(pos.contract_id)
+                if family_tally.get(fam, 0) >= max_per_family:
+                    continue
             # No open position for this contract — always insert.
             new_positions.append(pos)
+            if max_per_family > 0:
+                fam = contract_family(pos.contract_id)
+                family_tally[fam] = family_tally.get(fam, 0) + 1
             if pos.signal_id:
                 acted_signal_ids.add(pos.signal_id)
         elif settings.paper_allow_add_to_position:

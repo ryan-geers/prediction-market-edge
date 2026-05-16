@@ -477,10 +477,22 @@ def _position_rationale(
             pred_above = None
 
         if decision == "enter_long_yes":
+            if pred_above is True:
+                return (
+                    f"The model forecasts next month's unemployment at {pred_str} — above the {thresh_str} "
+                    f"threshold this contract pays out on. The market sees a {market_pct:.0f}% chance it clears "
+                    f"that bar; our model puts it at {our_pct:.0f}%, so we're betting YES it does."
+                )
+            if pred_above is False:
+                return (
+                    f"The model's central forecast is {pred_str} unemployment — below the {thresh_str} "
+                    f"needed for this YES to pay — but it still assigns a {our_pct:.0f}% chance the rate "
+                    f"ends above {thresh_str}, versus only {market_pct:.0f}% from the market, so we're "
+                    f"buying YES on that tail being underpriced."
+                )
             return (
-                f"The model forecasts next month's unemployment at {pred_str} — above the {thresh_str} "
-                f"this contract pays out on. The market sees a {market_pct:.0f}% chance it crosses "
-                f"that line; our model puts it at {our_pct:.0f}%, so we're betting YES it does."
+                f"The model puts a {our_pct:.0f}% chance unemployment exceeds {thresh_str}, "
+                f"versus the market's {market_pct:.0f}%; we're betting YES on that gap."
             )
         else:
             if pred_above:

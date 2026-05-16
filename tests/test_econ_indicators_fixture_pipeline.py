@@ -61,3 +61,41 @@ def test_econ_pipeline_fixture_chain(monkeypatch: pytest.MonkeyPatch, econ_thesi
     orders, pos = econ_thesis.paper_trade(signals)
     assert isinstance(orders, list)
     assert isinstance(pos, list)
+
+
+def test_signal_block_long_no_when_model_favors_yes(tmp_path: Path) -> None:
+    """Suppress long NO when model P(YES) > 50% (avoid fading a YES modal outcome)."""
+    settings = Settings(
+        duckdb_path=tmp_path / "db.duckdb",
+        data_dir=tmp_path,
+        signal_block_long_no_when_model_favors_yes=True,
+        edge_threshold_bps=300,
+    )
+    thesis = EconomicIndicatorsThesis(settings)
+    run_id = "r-no-fade"
+    fc = {
+        "market": [
+            {
+                "venue": "KALSHI",
+                "contract_id": "SYN-CPI-STUB",
+                "label": "synthetic",
+                "best_bid": 0.97,
+                "best_ask": 0.99,
+                "last_trade": 0.98,
+                "contract_type": "cpi",
+                "is_stub": False,
+            }
+        ],
+        "model_probability": 0.81,
+        "predicted_cpi_mom_pct": 0.4,
+        "validation_rmse": 0.5,
+        "walk_forward_val_rmse": 0.5,
+        "macro_history_count": 100,
+        "model_healthy": True,
+        "un_reg": None,
+        "un_healthy": False,
+    }
+    signals, _ = thesis.generate_signals(run_id, fc)
+    assert len(signals) == 1
+    assert signals[0].decision == "hold"
+    assert "blocked_by_no_fade_policy" in signals[0].decision_reason

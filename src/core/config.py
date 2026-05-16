@@ -11,6 +11,11 @@ class Settings(BaseSettings):
     duckdb_path: Path = Path("data/pme.duckdb")
     edge_threshold_bps: int = 300
 
+    #: If True, never open a long NO when the model still thinks YES is more likely
+    #: than not (P(YES) > 50%). Suppresses "value" trades that buy NO while the
+    #: event remains the model's modal outcome — e.g. model 81% vs market 98% on YES.
+    signal_block_long_no_when_model_favors_yes: bool = False
+
     paper_default_qty: float = 1.0  # overridden at runtime when paper_bankroll is set
     paper_bankroll: float = 500.0
     paper_position_size_pct: float = 0.05  # fraction of bankroll per position (e.g. 0.05 = $25 on $500)
@@ -37,6 +42,11 @@ class Settings(BaseSettings):
     # candidates are admitted first because signals are sorted by |edge_bps| before dedup).
     # 0 = unlimited (original behaviour).
     paper_max_total_open: int = 10
+
+    #: Max number of open positions sharing the same Kalshi-style series prefix
+    #: (text before the first "-", e.g. KXCPI, KXU3, CPI). Reduces one-factor CPI
+    #: ladders from crowding the book. 0 = disabled.
+    paper_max_open_per_contract_family: int = 0
 
     # Set True in CI / production to write run reports and model artifact files.
     # Leave False (default) for local runs to avoid cluttering data/ with files every invocation.

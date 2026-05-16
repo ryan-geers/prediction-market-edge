@@ -239,6 +239,14 @@ class EconomicIndicatorsThesis(ThesisModule):
                 decision = "hold"
                 health_note = ""
 
+            if (
+                self.settings.signal_block_long_no_when_model_favors_yes
+                and decision == "enter_long_no"
+                and model_probability > 0.5
+            ):
+                decision = "hold"
+                health_note = ";blocked_by_no_fade_policy"
+
             signal = SignalRecord(
                 run_id=run_id,
                 thesis_module=self.name,
