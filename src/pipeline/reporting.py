@@ -155,9 +155,37 @@ def _weekly_payload(con: duckdb.DuckDBPyConnection, since: datetime) -> dict[str
         [since],
     ).fetchall()
     hit_rate = None
+    closed_n_positive = closed_n_negative = closed_n_zero = closed_n_null = 0
     if closed:
-        wins = sum(1 for (r,) in closed if r is not None and float(r) > 0)
+        for (r,) in closed:
+            if r is None:
+                closed_n_null += 1
+            else:
+                fr = float(r)
+                if fr > 0:
+                    closed_n_positive += 1
+                elif fr < 0:
+                    closed_n_negative += 1
+                else:
+                    closed_n_zero += 1
+        wins = closed_n_positive
         hit_rate = 100.0 * wins / len(closed)
+    weekly_closed_realized_sum = _weekly_closed_realized_sum(closed)
+
+    open_by_series = con.execute(
+        """
+        SELECT
+          regexp_extract(contract_id, '^([^-]+)', 1) AS series_key,
+          COUNT(*)::BIGINT AS n_open,
+          COALESCE(SUM(COALESCE(unrealized_pnl, 0)), 0)::DOUBLE AS sum_unrealized,
+          COALESCE(SUM(ABS(COALESCE(net_qty, 0) * COALESCE(avg_entry_price, 0))), 0)::DOUBLE AS sum_entry_abs
+        FROM paper_positions
+        WHERE status = 'open'
+        GROUP BY 1
+        ORDER BY n_open DESC NULLS LAST
+        LIMIT 16
+        """
+    ).fetchall()
     winners = con.execute(
         """
         SELECT contract_id, realized_pnl, run_id FROM paper_positions
@@ -170,7 +198,7 @@ def _weekly_payload(con: duckdb.DuckDBPyConnection, since: datetime) -> dict[str
     losers = con.execute(
         """
         SELECT contract_id, realized_pnl, run_id FROM paper_positions
-        WHERE status = 'closed' AND realized_pnl IS NOT NULL
+        WHERE status = 'closed' AND realized_pnl IS NOT NULL AND realized_pnl < 0
           AND COALESCE(closed_at_utc, opened_at_utc) >= ?
         ORDER BY realized_pnl ASC NULLS LAST LIMIT 5
         """,
@@ -333,8 +361,14 @@ def _weekly_payload(con: duckdb.DuckDBPyConnection, since: datetime) -> dict[str
         "pnl_total": pnl_window[0] if pnl_window else 0,
         "pnl_realized": pnl_window[1] if pnl_window else 0,
         "pnl_unrealized": pnl_window[2] if pnl_window else 0,
+        "weekly_closed_realized_sum": float(weekly_closed_realized_sum),
+        "open_by_series": open_by_series,
         "hit_rate": hit_rate,
         "closed_n": len(closed),
+        "closed_n_positive": closed_n_positive,
+        "closed_n_negative": closed_n_negative,
+        "closed_n_zero": closed_n_zero,
+        "closed_n_null": closed_n_null,
         "winners": winners,
         "losers": losers,
         "last_sig": last_sig,
@@ -426,6 +460,32 @@ def _parse_reason(reason: Any) -> str:
     return " · ".join(parts)
 
 
+def _digest_series_prefix(contract_id: Any) -> str:
+    """First dash segment of ticker (KXCPI, KXU3, CPI, …)."""
+    cid = "" if contract_id is None else str(contract_id).strip()
+    if not cid:
+        return ""
+    return cid.split("-", 1)[0].upper()
+
+
+def _is_cpi_ladder_contract(contract_id: Any, decision_reason: Any) -> bool:
+    """Rolled CPI strike ladders → compact digest layout."""
+    cid = str(contract_id or "").strip().upper()
+    if cid.startswith(("KXCPI", "KXMCPI")):
+        return True
+    if cid.startswith("CPI-"):
+        return True
+    return _reason_pairs(decision_reason).get("contract_type", "").lower() == "cpi"
+
+
+def _weekly_closed_realized_sum(closed: list[tuple[Any, ...]]) -> float:
+    s = 0.0
+    for (r,) in closed:
+        if r is not None:
+            s += float(r)
+    return s
+
+
 def _reason_pairs(reason: Any) -> dict[str, str]:
     """Parse semicolon-delimited key=value reason string into a plain dict."""
     pairs: dict[str, str] = {}
@@ -434,6 +494,31 @@ def _reason_pairs(reason: Any) -> dict[str, str]:
             k, _, v = part.partition("=")
             pairs[k.strip()] = v.strip()
     return pairs
+
+
+def _decision_side_label(decision: Any) -> str:
+    d = str(decision or "").strip()
+    if d == "enter_long_yes":
+        return "LONG YES"
+    if d == "enter_long_no":
+        return "LONG NO"
+    return d or "—"
+
+
+def _split_open_holdings_cpi_else(
+    open_holdings: list[tuple[Any, ...]],
+) -> tuple[list[tuple[Any, ...]], list[tuple[Any, ...]]]:
+    """CPI strike ladders vs everything else — different digest layouts."""
+    cpi: list[tuple[Any, ...]] = []
+    other: list[tuple[Any, ...]] = []
+    for row in open_holdings:
+        cid, *_rest = row
+        reason = row[9] if len(row) > 9 else None
+        if _is_cpi_ladder_contract(cid, reason):
+            cpi.append(row)
+        else:
+            other.append(row)
+    return cpi, other
 
 
 def _position_rationale(
@@ -525,16 +610,15 @@ def _position_rationale(
         if decision == "enter_long_no":
             return (
                 f"The model expects CPI to rise {pred_qual}{pred_str} month-over-month — "
-                f"below the 0.3% threshold this contract pays out on. "
-                f"The market thinks there's a {market_pct:.0f}% chance inflation clears that bar; "
-                f"we see it as just {our_pct:.0f}%, so we're betting NO it stays below."
+                f"well below clearing the contract's CPI-m/m strike from the YES side. "
+                f"The market prices YES at roughly {market_pct:.0f}%; our model assigns about "
+                f"{our_pct:.0f}% to YES, so we're **long NO** (we expect CPI not to exceed that strike)."
             )
         else:
             return (
-                f"The model expects CPI to rise {pred_str} month-over-month — "
-                f"above the 0.3% threshold this contract pays out on. "
-                f"The market prices a {market_pct:.0f}% chance of that; "
-                f"we see {our_pct:.0f}%, so we're betting YES it clears the bar."
+                f"The model expects CPI near {pred_str} month-over-month — "
+                f"so we'd assign materially higher-than-mid odds to YES on this CPI m/m hurdle. "
+                f"Market YES ~{market_pct:.0f}% vs model ~{our_pct:.0f}%; we're **long YES**."
             )
 
     else:
@@ -637,63 +721,157 @@ def _format_weekly_md(w: dict[str, Any]) -> str:
     now_str = now.strftime("%b %d, %Y")
     runs_n = w.get("runs_n", 0) or 0
     signals_n = w.get("signals_n", 0) or 0
+    contracts_touch = int(w.get("contracts_n") or 0)
 
-    lines = [
-        "# Weekly Edge Digest",
-        f"**{since_str} – {now_str}  ·  {runs_n} pipeline run{'s' if runs_n != 1 else ''}  ·  {signals_n} signal{'s' if signals_n != 1 else ''} evaluated**",
-        "",
-        "---",
-        "",
-    ]
-
-    # Stub-data warning — shown at the very top so it can't be missed.
-    stub_n = w.get("stub_contract_count", 0) or 0
-    if stub_n:
-        lines.extend([
-            "> [!WARNING]",
-            f"> **USING SYNTHETIC MARKET DATA — KALSHI API UNREACHABLE**",
-            f"> {stub_n} contract{'s' if stub_n != 1 else ''} this week ran on hard-coded fallback prices, not live Kalshi quotes.",
-            "> Signals, edge figures, and any positions opened are based on **fake bid/ask data**.",
-            "> Check that `KALSHI_API_KEY` is set in CI secrets and that the Kalshi API is reachable.",
-            "",
-        ])
-
-    # Overview table
     lifetime_sum = w.get("lifetime_realized_sum") or 0.0
     lc = w.get("lifetime_closed_n", 0) or 0
     open_mark = w.get("open_book_mark") or 0.0
     order_count = w.get("order_count", 0) or 0
     open_pos = w.get("open_positions", 0) or 0
+    weekly_closed_r = float(w.get("weekly_closed_realized_sum") or 0.0)
+
+    lines = [
+        "# Weekly Edge Digest",
+        f"**{since_str} – {now_str}  ·  {runs_n} pipeline run{'s' if runs_n != 1 else ''}"
+        f"  ·  {signals_n} signal{'s' if signals_n != 1 else ''} evaluated**",
+        "",
+        "_Dollar marks are paper trading using mid quotes (not brokerage cash or Kalshi settlement payouts)._",
+        "",
+        "---",
+        "",
+    ]
+
+    # Stub-data warning — shown near the top so it can't be missed.
+    stub_n = w.get("stub_contract_count", 0) or 0
+    if stub_n:
+        lines.extend(
+            [
+                "> [!WARNING]",
+                "> **USING SYNTHETIC MARKET DATA — KALSHI API UNREACHABLE**",
+                f"> {stub_n} contract{'s' if stub_n != 1 else ''} this week ran on hard-coded fallback prices,"
+                " not live Kalshi quotes.",
+                "> Signals, edge figures, and any positions opened are based on **fake bid/ask data**.",
+                "> Check that `KALSHI_API_KEY` is set in CI secrets and that the Kalshi API is reachable.",
+                "",
+            ]
+        )
+
+    # Executive bullets (full-book counts + what's in-window)
+    open_by_series = w.get("open_by_series") or []
+    glance: list[str] = [
+        f"- **Rolling-window closed realized:** {_fmtp(weekly_closed_r)} (`paper_positions` that closed "
+        f"inside **{since_str}–{now_str}**) — summed realized PnL on those exits.",
+        f"- **Open-book mark:** {_fmtp(open_mark)} across **{open_pos}** open row{'s' if open_pos != 1 else ''} "
+        f"(Σ realized+unrealized on every open ticket).",
+        f"- **Activity:** **{order_count}** fills/orders logged this period · evaluated **{contracts_touch}**"
+        f" distinct contract{'s' if contracts_touch != 1 else ''} across **{signals_n}** signals.",
+    ]
+    if open_by_series:
+        top_bits = []
+        for sk, nk, sunr, sentry in open_by_series[:5]:
+            if not sk:
+                continue
+            top_bits.append(
+                f"`{sk}` **{nk}** open (~Σentry ${float(sentry or 0):.0f}"
+                f" · Σ uPnL {_fmtp(sunr)})"
+            )
+        if top_bits:
+            glance.append(
+                "- **Largest cohorts by open count:** " + " · ".join(top_bits)
+                + (" · …" if len(open_by_series) > len(top_bits) else "")
+            )
+    lines.extend(["## At a glance", ""] + glance + ["", "---", "", "## Portfolio & activity", ""])
 
     lines.extend(
         [
-            "## Overview",
+            "### Overview",
             "",
             "| Metric | Value |",
             "|--------|-------|",
             f"| Lifetime realized PnL | {_fmtp(lifetime_sum)} ({lc} closed trade{'s' if lc != 1 else ''}) |",
             f"| Open book mark | {_fmtp(open_mark)} |",
+            f"| Realized on closes inside window | {_fmtp(weekly_closed_r)} |",
             f"| Orders placed this week | {order_count} |",
-            f"| Open positions | {open_pos} |",
-            "",
-            "---",
+            f"| Open positions (DB) | {open_pos} |",
             "",
         ]
     )
 
-    # Open positions — each gets its own sub-section
+    if open_by_series:
+        lines.extend(
+            [
+                "### Open book concentration (full book · by ticker prefix)",
+                "",
+                "| Prefix | Rows | Σ |entry| notion | Σ uPnL |",
+                "|--------|-----:|-----------:|-------:|",
+            ]
+        )
+        for sk, nk, sunr, sentry in open_by_series:
+            if sk is None or str(sk).strip() == "":
+                continue
+            lines.append(
+                f"| `{sk}` | {nk} | ${float(sentry or 0):.2f} | {_fmtp(sunr)} |"
+            )
+        lines.extend(["", ""])
+
     oh = w.get("open_holdings") or []
-    _oh_total = open_pos  # from the overview count (all open in DB)
-    _oh_label = (
-        f"{_oh_total} total, showing {len(oh)}"
-        if len(oh) < _oh_total
-        else str(len(oh))
-    )
-    lines.extend([f"## Open Positions ({_oh_label})", ""])
+    _oh_total = open_pos
+    _oh_label = f"{_oh_total} DB rows, holdings sample shows {len(oh)}" if len(oh) < _oh_total else str(len(oh))
+    cpi_h, non_cpi = _split_open_holdings_cpi_else(oh)
+    lines.extend([f"### Open holdings ({_oh_label})", ""])
+
+    _cpi_max_tbl = 40
+    if cpi_h:
+        tot_ent = sum(
+            abs(float(r[1] or 0) * float(r[2] or 0)) for r in cpi_h
+        )
+        tot_u = sum(float(r[3] or 0) for r in cpi_h)
+        tail = ""
+        sorted_cpi = sorted(
+            cpi_h,
+            key=lambda r: abs(float(r[3] or 0)),
+            reverse=True,
+        )
+        if len(sorted_cpi) > _cpi_max_tbl:
+            tail = f"_… plus **{len(sorted_cpi) - _cpi_max_tbl}** more CPI ladder rows in sample not shown below._"
+            sorted_show = sorted_cpi[:_cpi_max_tbl]
+        else:
+            sorted_show = sorted_cpi
+        cpi_intro = (
+            f"_{len(cpi_h)} row{'s' if len(cpi_h) != 1 else ''} in sample · "
+            f"Σ entry notion ≈ **${tot_ent:.2f}** · Σ unrealized **{_fmtp(tot_u)}**_"
+        )
+        cpi_block = [
+            "#### CPI / inflation strike ladders (compact)",
+            "",
+            cpi_intro,
+        ]
+        if tail:
+            cpi_block.extend(["", tail])
+        cpi_block.append("")
+        lines.extend(cpi_block)
+        lines.extend(
+            [
+                "| Contract | Side | ≈ Notional | Unrealized | Edge (bps) |",
+                "|------------|------|----------:|-------------:|------------:|",
+            ]
+        )
+        for row in sorted_show:
+            cid, nq, ep, upnl, _thesis, decision, eb, _mp, _mip, _reason = row
+            nqf = float(nq) if nq is not None else 0.0
+            epf = float(ep) if ep is not None else 0.0
+            notion = abs(nqf * epf)
+            lines.append(
+                f"| `{cid}` | {_decision_side_label(decision)} | ${notion:.2f} | {_fmtp(upnl)}"
+                f" | {_fmtbps(eb)} |"
+            )
+        lines.append("")
+
     if not oh:
-        lines.append("_No open positions._")
-    else:
-        for row in oh:
+        lines.append("_No open positions in holdings sample._")
+    elif non_cpi:
+        lines.extend(["#### Narrative positions (non-CPI)", ""])
+        for row in non_cpi:
             cid, nq, ep, upnl, thesis, decision, eb, mp, mip, reason = row
             nqf = float(nq) if nq is not None else 0.0
             epf = float(ep) if ep is not None else 0.0
@@ -702,18 +880,22 @@ def _format_weekly_md(w: dict[str, Any]) -> str:
             mipf = float(mip) * 100 if mip is not None else None
 
             rationale = _position_rationale(decision, mp, mip, eb, reason)
-            lines.append(f"### {cid}")
+            lines.append(f"##### {cid}")
             lines.append(f"- **Decision:** `{decision or '—'}`")
             if rationale:
                 lines.append(f"- **Why:** {rationale}")
             lines.append(f"- **Entry:** {epf:.4f} × {nqf:.2f} shares ≈ ${notion:.2f} notional")
             lines.append(f"- **Unrealized PnL:** {_fmtp(upnl)}")
             if mpf is not None and mipf is not None:
-                lines.append(f"- **Model vs Market:** {mpf:.1f}% vs {mipf:.1f}%  (edge: {_fmtbps(eb)} bps)")
+                lines.append(
+                    f"- **Model vs Market:** {mpf:.1f}% vs {mipf:.1f}%  (edge: {_fmtbps(eb)} bps)"
+                )
             lines.append(f"- **Thesis:** `{thesis or '—'}`")
             if reason:
                 lines.append(f"- **Signal factors:** {_parse_reason(reason)}")
             lines.append("")
+    elif not cpi_h:
+        lines.append("_No open positions in holdings sample._")
 
     lines.extend(["---", ""])
 
@@ -724,7 +906,7 @@ def _format_weekly_md(w: dict[str, Any]) -> str:
 
     lines.extend(
         [
-            "## Activity This Week",
+            "### Activity this week",
             "",
             f"**New positions opened:** {len(ow)}  ",
             f"**Positions closed:** {len(ew)}" + ("" if ew else " (none)"),
@@ -735,7 +917,7 @@ def _format_weekly_md(w: dict[str, Any]) -> str:
     if ow:
         lines.extend(
             [
-                "### New Opens",
+                "#### New opens",
                 "",
                 "| Contract | Opened | Qty @ Entry | ≈ Notional | Thesis | Decision | Edge (bps) |",
                 "|----------|--------|-------------|------------|--------|----------|------------|",
@@ -754,7 +936,7 @@ def _format_weekly_md(w: dict[str, Any]) -> str:
     if ew:
         lines.extend(
             [
-                "### Exits",
+                "#### Exits",
                 "",
                 "| Contract | Realized PnL | Closed |",
                 "|----------|-------------|--------|",
@@ -767,7 +949,7 @@ def _format_weekly_md(w: dict[str, Any]) -> str:
     if rf:
         lines.extend(
             [
-                "### Fills",
+                "#### Fills",
                 "",
                 "| Contract | Fill Price | Qty | ≈ Notional |",
                 "|----------|-----------|-----|------------|",
@@ -780,11 +962,11 @@ def _format_weekly_md(w: dict[str, Any]) -> str:
     if not ow and not ew and not rf:
         lines.extend(["_No orders or position changes this week._", ""])
 
-    lines.extend(["---", ""])
+    lines.extend(["---", "", "## Signals", ""])
 
     # Signals considered — one row per unique contract, latest decision + plain-English rationale
     ls = w.get("latest_signals") or []
-    lines.extend([f"## Signals Considered ({len(ls)} unique contract{'s' if len(ls) != 1 else ''})", ""])
+    lines.extend([f"### Signals considered ({len(ls)} unique contract{'s' if len(ls) != 1 else ''})", ""])
     if not ls:
         lines.append("_No signals evaluated this period._")
     else:
@@ -806,7 +988,7 @@ def _format_weekly_md(w: dict[str, Any]) -> str:
     lines.extend(["---", ""])
 
     # Signal summary — compact
-    lines.extend(["## Signal Summary", ""])
+    lines.extend(["### Signal summary", ""])
     lines.append(
         f"**{signals_n} signal{'s' if signals_n != 1 else ''} across "
         f"{w.get('contracts_n', 0)} distinct contract{'s' if (w.get('contracts_n') or 0) != 1 else ''}**"
@@ -835,9 +1017,19 @@ def _format_weekly_md(w: dict[str, Any]) -> str:
     lines.extend([f"**Edge:** {' · '.join(edge_parts)}", ""])
 
     if w.get("hit_rate") is not None:
+        bn = int(w.get("closed_n") or 0)
+        bp = int(w.get("closed_n_positive") or 0)
+        bneg = int(w.get("closed_n_negative") or 0)
+        bz = int(w.get("closed_n_zero") or 0)
+        bnul = int(w.get("closed_n_null") or 0)
         lines.extend(
             [
-                f"**Hit rate** (realized > 0): {w['hit_rate']:.1f}% over {w['closed_n']} closed position{'s' if w['closed_n'] != 1 else ''}",
+                f"**Hit rate** (share of closes with strictly positive realized PnL): "
+                f"{w['hit_rate']:.1f}% — **{bn}** closed `paper_positions` rows in `{since_str}–{now_str}` window.",
+                "",
+                "_Composition:_ "
+                f"**{bp}** gain · **{bneg}** loss · **{bz}** exactly $0 · **{bnul}** unrated/null. "
+                "_Each database row counted once — paper exits at mids, not event settlement accuracy._",
                 "",
             ]
         )
@@ -922,12 +1114,15 @@ def _format_weekly_html(w: dict[str, Any]) -> str:
     now_str = now.strftime("%b %d, %Y")
     runs_n = w.get("runs_n", 0) or 0
     signals_n = w.get("signals_n", 0) or 0
+    contracts_touch = int(w.get("contracts_n") or 0)
 
     lifetime_sum = w.get("lifetime_realized_sum") or 0.0
     lc = int(w.get("lifetime_closed_n") or 0)
     open_mark = w.get("open_book_mark") or 0.0
     order_count = w.get("order_count", 0) or 0
     open_pos = w.get("open_positions", 0) or 0
+    weekly_closed_r = float(w.get("weekly_closed_realized_sum") or 0.0)
+    open_by_series = w.get("open_by_series") or []
 
     # Overview stats
     def stat(label: str, value: str, tone: str = "") -> str:
@@ -938,13 +1133,63 @@ def _format_weekly_html(w: dict[str, Any]) -> str:
         [
             stat("Lifetime Realized PnL", f'<span class="{_pnl_color(lifetime_sum)}">{_escape(_fmtp(lifetime_sum))}</span> <small>({lc} closed)</small>'),
             stat("Open Book Mark", f'<span class="{_pnl_color(open_mark)}">{_escape(_fmtp(open_mark))}</span>'),
+            stat("Window Closed Realized", f'<span class="{_pnl_color(weekly_closed_r)}">{_escape(_fmtp(weekly_closed_r))}</span>'),
             stat("Orders This Week", str(order_count)),
             stat("Open Positions", str(open_pos)),
         ]
     )
 
-    # Open holdings
+    glance_items = "".join(
+        [
+            "<li>",
+            "<strong>Rolling-window closed realized:</strong> ",
+            f'<span class="{_pnl_color(weekly_closed_r)}">{_escape(_fmtp(weekly_closed_r))}</span>',
+            " (paper_positions that closed in this digest window).</li>",
+            "<li>",
+            "<strong>Open-book mark:</strong> ",
+            f'<span class="{_pnl_color(open_mark)}">{_escape(_fmtp(open_mark))}</span>',
+            f" across <strong>{open_pos}</strong> open ticket{'s' if open_pos != 1 else ''}.</li>",
+            "<li>",
+            f"<strong>Pipeline breadth:</strong> {runs_n} run{'s' if runs_n != 1 else ''}, "
+            f"{signals_n} signal evaluation{'s' if signals_n != 1 else ''}, "
+            f"{contracts_touch} distinct contract{'s' if contracts_touch != 1 else ''}.</li>",
+        ]
+    )
+    if open_by_series:
+        top_li_bits: list[str] = []
+        for sk, nk, sunr, sentry in open_by_series[:5]:
+            if not sk or not str(sk).strip():
+                continue
+            top_li_bits.append(
+                f"<code>{_escape(str(sk))}</code> <strong>{nk}</strong>"
+                f" (~Σentry ${_escape(f'{float(sentry or 0):.0f}')}"
+                f" · Σ uPnL {_escape(_fmtp(sunr))})"
+            )
+        if top_li_bits:
+            more = " · …" if len(open_by_series) > len(top_li_bits) else ""
+            glance_items += (
+                "<li><strong>Largest cohorts (open rows):</strong> "
+                f'{" · ".join(top_li_bits)}{more}</li>'
+            )
+
+    conc_section = ""
+    if open_by_series:
+        conc_rows = "".join(
+            f"<tr><td><code>{_escape(str(sk))}</code></td>"
+            f"<td>{nk}</td><td>${float(sentry or 0):.2f}</td>"
+            f'<td><span class="{_pnl_color(sunr)}">{_escape(_fmtp(sunr))}</span></td></tr>'
+            for sk, nk, sunr, sentry in open_by_series
+            if sk is not None and str(sk).strip() != ""
+        )
+        conc_section = (
+            '<h3>Open book concentration (full book · ticker prefix)</h3>'
+            "<table><thead><tr><th>Prefix</th><th>Open rows</th>"
+            "<th>Σ entry notion</th><th>Σ uPnL</th></tr></thead>"
+            f"<tbody>{conc_rows}</tbody></table>"
+        )
+
     oh = w.get("open_holdings") or []
+    cpi_h, non_cpi_oh = _split_open_holdings_cpi_else(oh)
 
     def holding_card(row: tuple) -> str:  # type: ignore[type-arg]
         cid, nq, ep, upnl, thesis, decision, eb, mp, mip, reason = row
@@ -987,7 +1232,62 @@ def _format_weekly_html(w: dict[str, Any]) -> str:
             f'</tbody></table></div>'
         )
 
-    holdings_html = "".join(holding_card(r) for r in oh) if oh else "<p class='muted'>No open positions.</p>"
+    _cpi_max_tbl = 40
+    cpi_compact_html = ""
+    if cpi_h:
+        tot_ent = sum(abs(float(r[1] or 0) * float(r[2] or 0)) for r in cpi_h)
+        tot_u = sum(float(r[3] or 0) for r in cpi_h)
+        sorted_cpi = sorted(
+            cpi_h,
+            key=lambda r: abs(float(r[3] or 0)),
+            reverse=True,
+        )
+        more_note = ""
+        if len(sorted_cpi) > _cpi_max_tbl:
+            more_note = (
+                f"<p class='muted small'>Showing largest |uPnL| rows; "
+                f"{len(sorted_cpi) - _cpi_max_tbl} more in sample not listed.</p>"
+            )
+            sorted_show = sorted_cpi[:_cpi_max_tbl]
+        else:
+            sorted_show = sorted_cpi
+        rows_cpi = "".join(
+            f"<tr><td><code>{_escape(str(row[0]))}</code></td>"
+            f"<td>{_escape(_decision_side_label(row[5]))}</td>"
+            f"<td>${abs(float(row[1] or 0) * float(row[2] or 0)):.2f}</td>"
+            f'<td><span class="{_pnl_color(row[3])}">{_escape(_fmtp(row[3]))}</span></td>'
+            f"<td>{_escape(_fmtbps(row[6]))}</td></tr>"
+            for row in sorted_show
+        )
+        cpi_compact_html = (
+            f'<h4>CPI / inflation strike ladders (compact)</h4>'
+            f"<p class='small muted'>{len(cpi_h)} row{'s' if len(cpi_h) != 1 else ''} in sample · "
+            f"Σ entry notion ≈ <strong>${tot_ent:.2f}</strong> · "
+            f"Σ unrealized <strong>{_escape(_fmtp(tot_u))}</strong></p>"
+            f"{more_note}"
+            "<table><thead><tr><th>Contract</th><th>Side</th><th>≈ Notional</th>"
+            "<th>Unrealized</th><th>Edge (bps)</th></tr></thead>"
+            f"<tbody>{rows_cpi}</tbody></table>"
+        )
+
+    holdings_other_html = "".join(holding_card(r) for r in non_cpi_oh) if non_cpi_oh else ""
+    if not oh:
+        holdings_block_html = "<p class='muted'>No open positions in holdings sample.</p>"
+    else:
+        _oh_lab = (
+            f"{open_pos} DB rows · sample shows {len(oh)}"
+            if len(oh) < open_pos
+            else str(len(oh))
+        )
+        _parts_hold: list[str] = [f"<p class='muted small'>Holdings cohort: {_escape(_oh_lab)}</p>"]
+        if cpi_compact_html:
+            _parts_hold.append(cpi_compact_html)
+        if holdings_other_html:
+            _parts_hold.append("<h4>Other open positions</h4>")
+            _parts_hold.append(f'<div class="holdings">{holdings_other_html}</div>')
+        elif cpi_compact_html:
+            _parts_hold.append("<p class='muted small'>Non-CPI positions: none in this sample slice.</p>")
+        holdings_block_html = "\n".join(_parts_hold)
 
     # New opens table
     osw = w.get("opens_window") or []
@@ -1020,6 +1320,21 @@ def _format_weekly_html(w: dict[str, Any]) -> str:
     rows_dec = "".join(f"<tr><td><code>{_escape(str(a))}</code></td><td>{n}</td></tr>" for a, n in w["decisions"])
 
     hit = f"{w['hit_rate']:.1f}%" if w["hit_rate"] is not None else "n/a"
+
+    bn = int(w.get("closed_n") or 0)
+    bp = int(w.get("closed_n_positive") or 0)
+    bneg = int(w.get("closed_n_negative") or 0)
+    bz = int(w.get("closed_n_zero") or 0)
+    bnul = int(w.get("closed_n_null") or 0)
+    hit_html = ""
+    if w.get("hit_rate") is not None:
+        hit_html = (
+            f'<p style="margin-top:1rem"><strong>Hit rate</strong> (strictly positive realized): '
+            f'{_escape(hit)} — {_escape(str(bn))} closed rows in rolling window.</p>'
+            f'<p class="small muted" style="margin-top:0.35rem">'
+            f'{_escape(str(bp))} gain · {_escape(str(bneg))} loss · {_escape(str(bz))} exactly $0 · '
+            f'{_escape(str(bnul))} null — counts each DB row at paper exit marks.</p>'
+        )
 
     win_rows = "".join(
         f'<tr><td>{_escape(str(c))}</td><td><span class="pos">{_escape(_fmtp(rp))}</span></td></tr>'
@@ -1081,57 +1396,75 @@ small{{font-size:0.82rem;font-weight:400;color:#555}}
 .stub-warning{{background:#fef2f2;border:2px solid #dc2626;border-radius:6px;
   padding:1rem 1.25rem;margin:1rem 0 1.5rem;color:#7f1d1d;font-size:0.9rem;line-height:1.6}}
 .stub-warning code{{background:#fecaca;color:#7f1d1d}}
+ul.glance{{margin:0.75rem 0 1.25rem;padding-left:1.35rem;line-height:1.55}}
+ul.glance li{{margin-bottom:0.4rem}}
+h4{{font-size:0.92rem;font-weight:600;margin:1.1rem 0 0.45rem;color:#4b5563}}
 </style>
 </head><body>
 
 <h1>Weekly Edge Digest</h1>
 <p class="subtitle">{_escape(since_str)} – {_escape(now_str)} &nbsp;·&nbsp; {runs_n} pipeline run{'s' if runs_n != 1 else ''} &nbsp;·&nbsp; {signals_n} signal{'s' if signals_n != 1 else ''} evaluated</p>
 
+<p class="muted small" style="margin-bottom:1rem;line-height:1.55">
+Paper marks use mid quotes and are not brokerage cash or Kalshi settlement payouts.</p>
+
 {stub_banner_html}
-<h2>Overview</h2>
+
+<h2>At a glance</h2>
+<ul class="glance">{glance_items}</ul>
+
+<hr/>
+
+<h2>Portfolio &amp; activity</h2>
+
+<h3>Overview</h3>
 <div class="stats">{stats_html}</div>
 
-<hr/>
-
-<h2>Open Positions ({f"{open_pos} total, showing {len(oh)}" if len(oh) < open_pos else len(oh)})</h2>
-<div class="holdings">{holdings_html}</div>
+{conc_section}
 
 <hr/>
 
-<h2>Activity This Week</h2>
+<h3>Open holdings</h3>
+{holdings_block_html}
+
+<hr/>
+
+<h3>Activity this week</h3>
 <p><strong>New positions opened:</strong> {len(osw)} &nbsp; <strong>Positions closed:</strong> {len(ew) if ew else "0 (none)"}</p>
 
-{'<h3>New Opens</h3><table><thead><tr><th>Contract</th><th>Opened</th><th>Qty @ Entry</th><th>≈ Notional</th><th>Thesis</th><th>Decision</th><th>Edge (bps)</th></tr></thead><tbody>' + (rows_nw or '<tr><td colspan="7" class="muted">(none)</td></tr>') + '</tbody></table>' if osw else ''}
-{'<h3>Exits</h3><table><thead><tr><th>Contract</th><th>Realized PnL</th><th>Closed</th></tr></thead><tbody>' + (rows_ex or '<tr><td colspan="3" class="muted">(none)</td></tr>') + '</tbody></table>' if ew else ''}
-{'<h3>Fills</h3><table><thead><tr><th>Contract</th><th>Fill Price</th><th>Qty</th><th>≈ Notional</th></tr></thead><tbody>' + (rows_f or '<tr><td colspan="4" class="muted">(none)</td></tr>') + '</tbody></table>' if rf else ''}
+{'<h4>New opens</h4><table><thead><tr><th>Contract</th><th>Opened</th><th>Qty @ Entry</th><th>≈ Notional</th><th>Thesis</th><th>Decision</th><th>Edge (bps)</th></tr></thead><tbody>' + (rows_nw or '<tr><td colspan="7" class="muted">(none)</td></tr>') + '</tbody></table>' if osw else ''}
+{'<h4>Exits</h4><table><thead><tr><th>Contract</th><th>Realized PnL</th><th>Closed</th></tr></thead><tbody>' + (rows_ex or '<tr><td colspan="3" class="muted">(none)</td></tr>') + '</tbody></table>' if ew else ''}
+{'<h4>Fills</h4><table><thead><tr><th>Contract</th><th>Fill Price</th><th>Qty</th><th>≈ Notional</th></tr></thead><tbody>' + (rows_f or '<tr><td colspan="4" class="muted">(none)</td></tr>') + '</tbody></table>' if rf else ''}
 
 <hr/>
 
-<h2>Signals Considered</h2>
+<h2>Signals</h2>
+
+<h3>Signals considered</h3>
 {_build_signals_considered_html(w)}
 
 <hr/>
 
-<h2>Signal Summary</h2>
+<h3>Signal summary</h3>
 <p><strong>{signals_n} signal{'s' if signals_n != 1 else ''}</strong> across {w.get('contracts_n', 0)} distinct contract{'s' if (w.get('contracts_n') or 0) != 1 else ''}</p>
 <p class="muted small" style="margin-top:0.4rem">Edge: {" · ".join(edge_parts)}</p>
 
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin-top:1rem">
 <div>
-<h3>By Thesis</h3>
+<h4>By thesis</h4>
 <table><thead><tr><th>Thesis</th><th>Signals</th></tr></thead>
 <tbody>{rows_sig or '<tr><td colspan="2" class="muted">(none)</td></tr>'}</tbody></table>
 </div>
 <div>
-<h3>Decisions</h3>
+<h4>Decisions</h4>
 <table><thead><tr><th>Decision</th><th>Count</th></tr></thead>
 <tbody>{rows_dec or '<tr><td colspan="2" class="muted">(none)</td></tr>'}</tbody></table>
 </div>
 </div>
 
-{'<p style="margin-top:1rem"><strong>Hit rate</strong> (realized &gt; 0): ' + hit + ' over ' + str(w["closed_n"]) + ' closed position' + ('s' if w['closed_n'] != 1 else '') + '</p>' if w['hit_rate'] is not None else ''}
+{hit_html}
 
-{'<div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin-top:1rem"><div><h3>Top Winners</h3><table><thead><tr><th>Contract</th><th>Realized PnL</th></tr></thead><tbody>' + (win_rows or '<tr><td colspan="2" class="muted">(none)</td></tr>') + '</tbody></table></div><div><h3>Top Losers</h3><table><thead><tr><th>Contract</th><th>Realized PnL</th></tr></thead><tbody>' + (lose_rows or '<tr><td colspan="2" class="muted">(none)</td></tr>') + '</tbody></table></div></div>' if w.get('winners') or w.get('losers') else ''}
+{'<div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin-top:1rem"><div><h4>Top winners</h4><table><thead><tr><th>Contract</th><th>Realized PnL</th></tr></thead><tbody>' + (win_rows or '<tr><td colspan="2" class="muted">(none)</td></tr>') + '</tbody></table></div><div><h4>Top losers</h4><table><thead><tr><th>Contract</th><th>Realized PnL</th></tr></thead><tbody>' + (lose_rows or '<tr><td colspan="2" class="muted">(none)</td></tr>') + '</tbody></table></div></div>' if w.get('winners') or w.get('losers') else ''}
 
 <hr/>
 
