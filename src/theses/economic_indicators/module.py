@@ -5,6 +5,7 @@ from src.connectors.bea import BeaConnector
 from src.connectors.bls import BlsConnector
 from src.connectors.fred import FredConnector
 from src.connectors.kalshi import KalshiConnector
+from src.core.market_quotes import assess_yes_quote
 from src.core.config import Settings
 from src.core.schemas import (
     MarketSnapshotRecord,
@@ -174,9 +175,14 @@ class EconomicIndicatorsThesis(ThesisModule):
         for contract in forecast["market"]:
             bid = float(contract["best_bid"])
             ask = float(contract["best_ask"])
-            mid = (bid + ask) / 2
-            spread = _spread_bps(bid, ask)
+            last_raw = contract.get("last_trade")
+            last_trade = float(last_raw) if last_raw is not None else None
+            qa = assess_yes_quote(bid, ask, last_trade, self.settings)
+            bid, ask = qa.best_bid, qa.best_ask
+            mid = qa.fair_yes_mid
+            spread = qa.spread_bps if qa.spread_bps != float("inf") else _spread_bps(bid, ask)
             contract_type = contract.get("contract_type", "unknown")
+            quote_note = f";quote_quality={qa.quality}"
 
             if contract_type in _CPI_CONTRACT_TYPES:
                 model_probability = forecast["model_probability"]
@@ -218,26 +224,29 @@ class EconomicIndicatorsThesis(ThesisModule):
 
             else:
                 # Unknown contract type — always hold.
-                model_probability = mid
+                model_probability = mid if mid is not None else 0.5
                 is_healthy = False
                 decision_extras = f"contract_type=unknown;series={contract.get('series_ticker', '')}"
                 model_version = "none"
                 feature_version = "none"
 
-            edge_bps = (model_probability - mid) * 10000
+            edge_bps = (model_probability - mid) * 10000 if mid is not None else 0.0
 
-            if not is_healthy:
+            if mid is None or not qa.is_signal_quality:
+                decision = "hold"
+                health_note = f";quote_unusable=true{quote_note}"
+            elif not is_healthy:
                 decision = "hold"
                 health_note = ";model_healthy=false;blocked_by_health_gate"
             elif edge_bps > self.settings.edge_threshold_bps:
                 decision = "enter_long_yes"
-                health_note = ""
+                health_note = quote_note
             elif edge_bps < (-1 * self.settings.edge_threshold_bps):
                 decision = "enter_long_no"
-                health_note = ""
+                health_note = quote_note
             else:
                 decision = "hold"
-                health_note = ""
+                health_note = quote_note
 
             if (
                 self.settings.signal_block_long_no_when_model_favors_yes
@@ -254,7 +263,7 @@ class EconomicIndicatorsThesis(ThesisModule):
                 contract_id=contract["contract_id"],
                 contract_label=contract["label"],
                 model_probability=model_probability,
-                market_implied_probability=mid,
+                market_implied_probability=mid if mid is not None else 0.0,
                 edge_bps=edge_bps,
                 bid_price=bid,
                 ask_price=ask,
@@ -274,14 +283,15 @@ class EconomicIndicatorsThesis(ThesisModule):
             )
             signals.append(signal)
 
+            snap_mid = mid if mid is not None else (last_trade if last_trade is not None else ask)
             snapshots.append(
                 MarketSnapshotRecord(
                     venue=contract["venue"],
                     contract_id=contract["contract_id"],
                     best_bid=bid,
                     best_ask=ask,
-                    last_trade=float(contract["last_trade"]),
-                    mid_price=mid,
+                    last_trade=last_trade,
+                    mid_price=snap_mid,
                     spread_bps=spread,
                 )
             )

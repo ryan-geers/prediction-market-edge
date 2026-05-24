@@ -167,8 +167,8 @@ def test_apply_exits_flip_closes_yes_position_on_no_signal():
     assert len(closes) == 1
     assert closes[0].position_id == pos.position_id
     assert closes[0].close_reason == "signal_flip"
-    # exit at yes_mid = 0.30
-    assert abs(closes[0].avg_exit_price - 0.30) < 1e-9
+    # exit at yes bid = 0.29 (conservative; not naive mid)
+    assert abs(closes[0].avg_exit_price - 0.29) < 1e-9
 
 
 def test_apply_exits_flip_closes_no_position_on_yes_signal():
@@ -183,8 +183,8 @@ def test_apply_exits_flip_closes_no_position_on_yes_signal():
     closes = apply_exits([pos], [flip_signal], [snap], settings)
     assert len(closes) == 1
     assert closes[0].close_reason == "signal_flip"
-    # NO exit price = 1 - yes_mid = 0.30
-    assert abs(closes[0].avg_exit_price - 0.30) < 1e-9
+    # NO exit = 1 - yes_ask = 1 - 0.71 = 0.29
+    assert abs(closes[0].avg_exit_price - 0.29) < 1e-9
 
 
 def test_apply_exits_no_flip_when_signal_unchanged():

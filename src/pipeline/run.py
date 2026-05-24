@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from src.core.market_quotes import assess_yes_quote
 from src.core.config import get_settings
 from src.core.logging import setup_logging
 from src.core.schemas import PositionMark, RunManifest
@@ -58,16 +59,20 @@ def run_pipeline(thesis_name: str = "economic_indicators") -> tuple[str, Path | 
     forecast_records = thesis.build_forecast_records(run_id, forecast)
     signals, snapshots = thesis.generate_signals(run_id, forecast)
 
-    # Phase 1: re-mark any existing open positions at the current mid before
-    # creating new entries so unrealized PnL is always current.
-    marks = [
-        PositionMark(
-            contract_id=snap.contract_id,
-            venue=snap.venue,
-            mark_price=snap.mid_price,
+    # Phase 1: re-mark open positions using conservative bid/ask (not naive mid).
+    marks = []
+    for snap in snapshots:
+        qa = assess_yes_quote(snap.best_bid, snap.best_ask, snap.last_trade, settings)
+        marks.append(
+            PositionMark(
+                contract_id=snap.contract_id,
+                venue=snap.venue,
+                mark_price=qa.fair_yes_mid if qa.fair_yes_mid is not None else snap.mid_price,
+                yes_bid=qa.best_bid,
+                yes_ask=qa.best_ask,
+                quote_reliable=qa.is_exit_quality or qa.fair_yes_mid is not None,
+            )
         )
-        for snap in snapshots
-    ]
     marked = storage.mark_open_positions(marks)
     LOGGER.info("Re-marked %d open position rows", marked)
 

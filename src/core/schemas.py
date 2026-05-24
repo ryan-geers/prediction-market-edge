@@ -93,6 +93,11 @@ class PositionMark(BaseModel):
     venue: str
     mark_price: float
     last_mark_time_utc: datetime = Field(default_factory=utc_now)
+    #: When set, storage applies direction-aware marks (YES→bid, NO→ask) instead of
+    #: one mid for all rows. ``mark_price`` holds fair mid for logging/fallback.
+    yes_bid: float | None = None
+    yes_ask: float | None = None
+    quote_reliable: bool = True
 
 
 class AddToPosition(BaseModel):

@@ -43,10 +43,21 @@ class Settings(BaseSettings):
     # 0 = unlimited (original behaviour).
     paper_max_total_open: int = 10
 
-    #: Max number of open positions sharing the same Kalshi-style series prefix
+    #: Max open positions sharing the same Kalshi-style series prefix
     #: (text before the first "-", e.g. KXCPI, KXU3, CPI). Reduces one-factor CPI
     #: ladders from crowding the book. 0 = disabled.
-    paper_max_open_per_contract_family: int = 0
+    paper_max_open_per_contract_family: int = 15
+
+    #: Skip signal-flip / stop-loss exits when the current quote is not executable
+    #: (e.g. bid=0 so a long YES cannot realistically be sold).
+    paper_skip_exit_on_unreliable_quote: bool = True
+
+    # Quote sanity — avoid (bid=0, ask=1) → mid=0.50 phantom marks.
+    market_min_bid_for_quote: float = 0.01
+    market_min_ask_for_quote: float = 0.01
+    market_max_spread_bps: float = 1500.0
+    #: When bid is missing, treat ask above this as a broken empty book (no mid).
+    market_max_one_sided_ask: float = 0.85
 
     # Set True in CI / production to write run reports and model artifact files.
     # Leave False (default) for local runs to avoid cluttering data/ with files every invocation.

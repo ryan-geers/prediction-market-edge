@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+from src.core.market_quotes import assess_yes_quote, executable_yes_exit_price
 from src.core.schemas import (
     AddToPosition,
     MarketSnapshotRecord,
@@ -75,6 +76,24 @@ def _position_qty(fill_price: float, settings: "Settings") -> float:
     return float(settings.paper_default_qty)
 
 
+def _quote_assessment(
+    snap: MarketSnapshotRecord | None,
+    sig: SignalRecord | None,
+    settings: Settings,
+):
+    """Build a quote assessment from snapshot (preferred) or signal touch."""
+    if snap is not None:
+        return assess_yes_quote(
+            snap.best_bid,
+            snap.best_ask,
+            snap.last_trade,
+            settings,
+        )
+    if sig is not None:
+        return assess_yes_quote(sig.bid_price, sig.ask_price, None, settings)
+    return None
+
+
 def apply_exits(
     open_positions: list[PaperPositionRecord],
     signals: list[SignalRecord],
@@ -118,9 +137,23 @@ def apply_exits(
                 flip_yes = pos.direction == "yes" and sig.edge_bps < -threshold_bps
                 flip_no = pos.direction == "no" and sig.edge_bps > threshold_bps
                 if flip_yes or flip_no:
-                    snap = snap_by_contract.get(key)
-                    yes_mid = snap.mid_price if snap else float(sig.market_implied_probability)
-                    exit_px = yes_mid if pos.direction == "yes" else (1.0 - yes_mid)
+                    if "quote_unusable=true" in (sig.decision_reason or ""):
+                        continue
+                    qa = _quote_assessment(snap_by_contract.get(key), sig, settings)
+                    if qa is None:
+                        continue
+                    if settings.paper_skip_exit_on_unreliable_quote:
+                        exit_px = executable_yes_exit_price(qa, pos.direction)
+                        if exit_px is None:
+                            continue
+                    else:
+                        snap = snap_by_contract.get(key)
+                        yes_mid = (
+                            qa.fair_yes_mid
+                            if qa.fair_yes_mid is not None
+                            else (snap.mid_price if snap else float(sig.market_implied_probability))
+                        )
+                        exit_px = yes_mid if pos.direction == "yes" else (1.0 - yes_mid)
                     realized = (exit_px - pos.avg_entry_price) * pos.net_qty
                     closes.append(
                         PositionClose(
@@ -144,12 +177,23 @@ def apply_exits(
                 loss_pct = pos.unrealized_pnl / cost_basis
                 if loss_pct < -abs(settings.paper_stop_loss_pct):
                     snap = snap_by_contract.get(key)
-                    yes_mid = (
-                        snap.mid_price
-                        if snap
-                        else (pos.mark_price if pos.mark_price is not None else pos.avg_entry_price)
-                    )
-                    exit_px = yes_mid if (pos.direction != "no") else (1.0 - yes_mid)
+                    qa = _quote_assessment(snap, None, settings)
+                    if settings.paper_skip_exit_on_unreliable_quote and pos.direction is not None:
+                        exit_px = (
+                            executable_yes_exit_price(qa, pos.direction) if qa is not None else None
+                        )
+                        if exit_px is None:
+                            continue
+                    elif qa is not None and qa.fair_yes_mid is not None:
+                        yes_mid = qa.fair_yes_mid
+                        exit_px = yes_mid if (pos.direction != "no") else (1.0 - yes_mid)
+                    else:
+                        yes_mid = (
+                            snap.mid_price
+                            if snap
+                            else (pos.mark_price if pos.mark_price is not None else pos.avg_entry_price)
+                        )
+                        exit_px = yes_mid if (pos.direction != "no") else (1.0 - yes_mid)
                     realized = (exit_px - pos.avg_entry_price) * pos.net_qty
                     closes.append(
                         PositionClose(
@@ -307,6 +351,7 @@ def simulate_paper_trades(
 
         side: str = "yes" if signal.decision == "enter_long_yes" else "no"
         yes_mid = float(signal.market_implied_probability)
+        qa = assess_yes_quote(signal.bid_price, signal.ask_price, None, settings)
         if side == "yes":
             raw_fill = _apply_slippage_to_yes_ask(signal.ask_price, slippage)
         else:
@@ -316,12 +361,15 @@ def simulate_paper_trades(
 
         fee_paid = raw_fill * (fees / 10000.0) * qty
         effective_entry = raw_fill
-        no_mid = _no_mark_value(yes_mid)
-
         if side == "yes":
-            gross_mtm = (yes_mid - effective_entry) * qty
+            conservative_yes = qa.yes_bid_for_exit if qa.yes_bid_for_exit > 0 else effective_entry
+            gross_mtm = (conservative_yes - effective_entry) * qty
+            mark_px = conservative_yes
         else:
-            gross_mtm = (no_mid - effective_entry) * qty
+            yes_ask = qa.yes_ask_for_exit
+            no_mark = 1.0 - yes_ask
+            gross_mtm = (no_mark - effective_entry) * qty
+            mark_px = yes_ask
         net_unreal = gross_mtm - fee_paid
 
         order = PaperOrderRecord(
@@ -347,7 +395,7 @@ def simulate_paper_trades(
         orders.append(order)
 
         if eod:
-            exit_px = yes_mid if side == "yes" else no_mid
+            exit_px = yes_mid if side == "yes" else _no_mark_value(yes_mid)
             realized = (exit_px - effective_entry) * qty - fee_paid
             positions.append(
                 PaperPositionRecord(
@@ -371,7 +419,6 @@ def simulate_paper_trades(
                 )
             )
         else:
-            mark_px = yes_mid if side == "yes" else no_mid
             positions.append(
                 PaperPositionRecord(
                     position_id=str(uuid4()),

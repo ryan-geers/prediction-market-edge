@@ -383,42 +383,102 @@ class Storage:
 
     def mark_open_positions(self, marks: Iterable[PositionMark]) -> int:
         """
-        Re-price all open positions for the given contracts at the current market mid.
-        Returns the total number of rows updated.
-        Uses RETURNING to get an accurate count because DuckDB always reports
-        rowcount=-1 for UPDATE statements.
+        Re-price open positions for the given contracts.
 
-        mark_price always stores the YES mid. The unrealized PnL formula differs by
-        direction: YES positions gain when YES mid rises; NO positions gain when YES
-        mid falls (i.e. when (1 - yes_mid) rises above the NO entry price).
+        When ``yes_bid`` / ``yes_ask`` are set on the mark, uses direction-aware
+        executable prices (long YES → bid, long NO → yes ask). Skips rows when
+        the quote is too broken to mark (e.g. bid=0 for a long YES).
+
+        ``mark_price`` in the DB always stores the YES-side reference used by the
+        unrealized PnL formula in :meth:`add_to_position`.
         """
         updated = 0
+        min_bid = 0.01
         for mark in marks:
-            rows = self.con.execute(
-                """
-                UPDATE paper_positions
-                SET
-                  mark_price           = ?,
-                  unrealized_pnl       = CASE
-                                           WHEN direction = 'no'
-                                           THEN ((1.0 - ?) - avg_entry_price) * net_qty
-                                           ELSE (? - avg_entry_price) * net_qty
-                                         END,
-                  last_mark_time_utc   = ?
-                WHERE status       = 'open'
-                  AND contract_id  = ?
-                  AND venue        = ?
-                RETURNING position_id
-                """,
-                [
-                    mark.mark_price,
-                    mark.mark_price,  # NO branch: 1 - yes_mid
-                    mark.mark_price,  # YES branch: yes_mid
-                    mark.last_mark_time_utc,
-                    mark.contract_id,
-                    mark.venue,
-                ],
-            ).fetchall()
+            if mark.yes_bid is not None and mark.yes_ask is not None:
+                yes_bid = float(mark.yes_bid)
+                yes_ask = float(mark.yes_ask)
+                broken_no_book = yes_bid <= 0 and yes_ask >= 0.999
+                rows = self.con.execute(
+                    """
+                    UPDATE paper_positions
+                    SET
+                      mark_price = CASE
+                        WHEN direction = 'yes' AND ? >= ? THEN ?
+                        WHEN direction = 'no' AND NOT ? THEN ?
+                        WHEN direction IS NULL AND ? IS NOT NULL THEN ?
+                        ELSE mark_price
+                      END,
+                      unrealized_pnl = CASE
+                        WHEN direction = 'no' AND NOT ? THEN
+                          ((1.0 - ?) - avg_entry_price) * net_qty
+                        WHEN direction = 'yes' AND ? >= ? THEN
+                          (? - avg_entry_price) * net_qty
+                        WHEN direction IS NULL AND ? IS NOT NULL THEN
+                          (? - avg_entry_price) * net_qty
+                        ELSE unrealized_pnl
+                      END,
+                      last_mark_time_utc = ?
+                    WHERE status = 'open'
+                      AND contract_id = ?
+                      AND venue = ?
+                      AND (
+                        (direction = 'yes' AND ? >= ?)
+                        OR (direction = 'no' AND NOT ?)
+                        OR (direction IS NULL AND ? IS NOT NULL)
+                      )
+                    RETURNING position_id
+                    """,
+                    [
+                        yes_bid,
+                        min_bid,
+                        yes_bid,
+                        broken_no_book,
+                        yes_ask,
+                        mark.mark_price,
+                        mark.mark_price,
+                        broken_no_book,
+                        yes_ask,
+                        yes_bid,
+                        min_bid,
+                        yes_bid,
+                        mark.mark_price,
+                        mark.mark_price,
+                        mark.last_mark_time_utc,
+                        mark.contract_id,
+                        mark.venue,
+                        yes_bid,
+                        min_bid,
+                        broken_no_book,
+                        mark.mark_price,
+                    ],
+                ).fetchall()
+            else:
+                rows = self.con.execute(
+                    """
+                    UPDATE paper_positions
+                    SET
+                      mark_price           = ?,
+                      unrealized_pnl       = CASE
+                                               WHEN direction = 'no'
+                                               THEN ((1.0 - ?) - avg_entry_price) * net_qty
+                                               ELSE (? - avg_entry_price) * net_qty
+                                             END,
+                      last_mark_time_utc   = ?
+                    WHERE status       = 'open'
+                      AND contract_id  = ?
+                      AND venue        = ?
+                    RETURNING position_id
+                    """,
+                    [
+                        mark.mark_price,
+                        mark.mark_price,
+                        mark.mark_price,
+                        mark.last_mark_time_utc,
+                        mark.contract_id,
+                        mark.venue,
+                    ],
+                ).fetchall()
             updated += len(rows)
         return updated
 
