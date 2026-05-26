@@ -390,7 +390,8 @@ class Storage:
         the quote is too broken to mark (e.g. bid=0 for a long YES).
 
         ``mark_price`` in the DB always stores the YES-side reference used by the
-        unrealized PnL formula in :meth:`add_to_position`.
+        unrealized PnL formula in :meth:`add_to_position`. Legacy directionless
+        rows are only re-marked when the caller considers the quote reliable.
         """
         updated = 0
         min_bid = 0.01
@@ -399,6 +400,7 @@ class Storage:
                 yes_bid = float(mark.yes_bid)
                 yes_ask = float(mark.yes_ask)
                 broken_no_book = yes_bid <= 0 and yes_ask >= 0.999
+                legacy_mark = mark.mark_price if mark.quote_reliable else None
                 rows = self.con.execute(
                     """
                     UPDATE paper_positions
@@ -435,22 +437,22 @@ class Storage:
                         yes_bid,
                         broken_no_book,
                         yes_ask,
-                        mark.mark_price,
-                        mark.mark_price,
+                        legacy_mark,
+                        legacy_mark,
                         broken_no_book,
                         yes_ask,
                         yes_bid,
                         min_bid,
                         yes_bid,
-                        mark.mark_price,
-                        mark.mark_price,
+                        legacy_mark,
+                        legacy_mark,
                         mark.last_mark_time_utc,
                         mark.contract_id,
                         mark.venue,
                         yes_bid,
                         min_bid,
                         broken_no_book,
-                        mark.mark_price,
+                        legacy_mark,
                     ],
                 ).fetchall()
             else:

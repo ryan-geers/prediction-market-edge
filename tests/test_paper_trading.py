@@ -90,6 +90,22 @@ def test_simulate_paper_trades_sets_direction():
     assert positions[1].direction == "no"
 
 
+def test_simulate_paper_trades_skips_no_entry_without_yes_bid():
+    s_no = _base_signal().model_copy(
+        update={
+            "decision": "enter_long_no",
+            "edge_bps": -700.0,
+            "market_implied_probability": 0.10,
+            "bid_price": 0.0,
+            "ask_price": 0.10,
+            "contract_id": "CPI-NO-ONE-SIDED",
+        }
+    )
+    orders, positions = simulate_paper_trades([s_no], Settings())
+    assert orders == []
+    assert positions == []
+
+
 def test_paper_trading_skips_hold():
     s = _base_signal()
     s = s.model_copy(update={"decision": "hold"})
@@ -194,6 +210,33 @@ def test_apply_exits_no_flip_when_signal_unchanged():
     same_signal = _base_signal()  # edge_bps=1200, still favoring YES
     snap = _snapshot(mid_price=0.55)
     closes = apply_exits([pos], [same_signal], [snap], settings)
+    assert closes == []
+
+
+def test_apply_exits_does_not_flip_on_blocked_no_fade_signal():
+    settings = Settings(edge_threshold_bps=300, paper_exit_on_flip=True)
+    pos = _open_position(direction="yes", avg_entry_price=0.55, net_qty=45.0)
+    blocked_signal = _base_signal().model_copy(
+        update={
+            "decision": "hold",
+            "decision_reason": "contract_type=cpi;blocked_by_no_fade_policy",
+            "model_probability": 0.81,
+            "market_implied_probability": 0.98,
+            "edge_bps": -1700.0,
+            "bid_price": 0.97,
+            "ask_price": 0.99,
+        }
+    )
+    snap = MarketSnapshotRecord(
+        venue="KALSHI",
+        contract_id="CPI-TEST",
+        best_bid=0.97,
+        best_ask=0.99,
+        last_trade=0.98,
+        mid_price=0.98,
+        spread_bps=204.0,
+    )
+    closes = apply_exits([pos], [blocked_signal], [snap], settings)
     assert closes == []
 
 
