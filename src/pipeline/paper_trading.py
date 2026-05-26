@@ -134,8 +134,16 @@ def apply_exits(
         if settings.paper_exit_on_flip and pos.direction is not None:
             sig = signal_by_contract.get(key)
             if sig is not None:
-                flip_yes = pos.direction == "yes" and sig.edge_bps < -threshold_bps
-                flip_no = pos.direction == "no" and sig.edge_bps > threshold_bps
+                flip_yes = (
+                    pos.direction == "yes"
+                    and sig.decision == "enter_long_no"
+                    and sig.edge_bps < -threshold_bps
+                )
+                flip_no = (
+                    pos.direction == "no"
+                    and sig.decision == "enter_long_yes"
+                    and sig.edge_bps > threshold_bps
+                )
                 if flip_yes or flip_no:
                     if "quote_unusable=true" in (sig.decision_reason or ""):
                         continue
@@ -355,6 +363,8 @@ def simulate_paper_trades(
         if side == "yes":
             raw_fill = _apply_slippage_to_yes_ask(signal.ask_price, slippage)
         else:
+            if qa.best_bid < float(settings.market_min_bid_for_quote):
+                continue
             raw_fill = _apply_slippage_to_no_ask(signal.bid_price, slippage)
 
         qty = _position_qty(raw_fill, settings)
