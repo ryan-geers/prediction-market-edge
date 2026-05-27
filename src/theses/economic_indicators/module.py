@@ -248,6 +248,24 @@ class EconomicIndicatorsThesis(ThesisModule):
                 decision = "hold"
                 health_note = quote_note
 
+            threshold_bps = float(self.settings.edge_threshold_bps)
+            if decision == "enter_long_yes":
+                executable_edge_bps = (model_probability - ask) * 10000
+                if executable_edge_bps <= threshold_bps:
+                    decision = "hold"
+                    health_note = (
+                        f";blocked_by_executable_edge;executable_edge_bps={executable_edge_bps:.2f}"
+                        + quote_note
+                    )
+            elif decision == "enter_long_no":
+                executable_edge_bps = (bid - model_probability) * 10000
+                if executable_edge_bps <= threshold_bps:
+                    decision = "hold"
+                    health_note = (
+                        f";blocked_by_executable_edge;executable_edge_bps={executable_edge_bps:.2f}"
+                        + quote_note
+                    )
+
             if (
                 self.settings.signal_block_long_no_when_model_favors_yes
                 and decision == "enter_long_no"

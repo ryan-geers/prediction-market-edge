@@ -99,3 +99,91 @@ def test_signal_block_long_no_when_model_favors_yes(tmp_path: Path) -> None:
     assert len(signals) == 1
     assert signals[0].decision == "hold"
     assert "blocked_by_no_fade_policy" in signals[0].decision_reason
+
+
+def _cpi_forecast(market: list[dict], model_probability: float) -> dict:
+    return {
+        "market": market,
+        "model_probability": model_probability,
+        "predicted_cpi_mom_pct": 0.4,
+        "validation_rmse": 0.5,
+        "walk_forward_val_rmse": 0.5,
+        "macro_history_count": 100,
+        "model_healthy": True,
+        "un_reg": None,
+        "un_healthy": False,
+    }
+
+
+def test_one_sided_last_trade_does_not_enter_yes_below_ask(tmp_path: Path) -> None:
+    settings = Settings(duckdb_path=tmp_path / "db.duckdb", data_dir=tmp_path, edge_threshold_bps=300)
+    thesis = EconomicIndicatorsThesis(settings)
+    signals, _ = thesis.generate_signals(
+        "r-one-sided-last",
+        _cpi_forecast(
+            [
+                {
+                    "venue": "KALSHI",
+                    "contract_id": "SYN-CPI-STUB",
+                    "label": "synthetic",
+                    "best_bid": 0.0,
+                    "best_ask": 0.60,
+                    "last_trade": 0.30,
+                    "contract_type": "cpi",
+                    "is_stub": False,
+                }
+            ],
+            model_probability=0.38,
+        ),
+    )
+    assert signals[0].decision == "hold"
+    assert "blocked_by_executable_edge" in signals[0].decision_reason
+
+
+def test_one_sided_ask_proxy_does_not_enter_no_without_bid(tmp_path: Path) -> None:
+    settings = Settings(duckdb_path=tmp_path / "db.duckdb", data_dir=tmp_path, edge_threshold_bps=300)
+    thesis = EconomicIndicatorsThesis(settings)
+    signals, _ = thesis.generate_signals(
+        "r-one-sided-ask",
+        _cpi_forecast(
+            [
+                {
+                    "venue": "KALSHI",
+                    "contract_id": "SYN-CPI-STUB",
+                    "label": "synthetic",
+                    "best_bid": 0.0,
+                    "best_ask": 0.10,
+                    "last_trade": None,
+                    "contract_type": "cpi",
+                    "is_stub": False,
+                }
+            ],
+            model_probability=0.05,
+        ),
+    )
+    assert signals[0].decision == "hold"
+    assert "blocked_by_executable_edge" in signals[0].decision_reason
+
+
+def test_one_sided_ask_proxy_allows_yes_with_executable_edge(tmp_path: Path) -> None:
+    settings = Settings(duckdb_path=tmp_path / "db.duckdb", data_dir=tmp_path, edge_threshold_bps=300)
+    thesis = EconomicIndicatorsThesis(settings)
+    signals, _ = thesis.generate_signals(
+        "r-one-sided-yes",
+        _cpi_forecast(
+            [
+                {
+                    "venue": "KALSHI",
+                    "contract_id": "SYN-CPI-STUB",
+                    "label": "synthetic",
+                    "best_bid": 0.0,
+                    "best_ask": 0.10,
+                    "last_trade": None,
+                    "contract_type": "cpi",
+                    "is_stub": False,
+                }
+            ],
+            model_probability=0.20,
+        ),
+    )
+    assert signals[0].decision == "enter_long_yes"
