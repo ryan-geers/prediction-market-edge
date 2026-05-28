@@ -242,8 +242,12 @@ class EconomicIndicatorsThesis(ThesisModule):
                 decision = "enter_long_yes"
                 health_note = quote_note
             elif edge_bps < (-1 * self.settings.edge_threshold_bps):
-                decision = "enter_long_no"
-                health_note = quote_note
+                if bid < float(self.settings.market_min_bid_for_quote):
+                    decision = "hold"
+                    health_note = f";quote_unusable_for_no_entry=true{quote_note}"
+                else:
+                    decision = "enter_long_no"
+                    health_note = quote_note
             else:
                 decision = "hold"
                 health_note = quote_note
