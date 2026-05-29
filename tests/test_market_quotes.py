@@ -32,6 +32,7 @@ def test_empty_book_bid_zero_ask_one_is_unusable():
     assert not qa.is_signal_quality
     assert not qa.is_exit_quality
     assert executable_yes_exit_price(qa, "yes") is None
+    assert executable_yes_exit_price(qa, "no") is None
 
 
 def test_one_sided_low_ask_allows_signal_but_not_exit():
@@ -54,3 +55,13 @@ def test_executable_yes_exit_uses_bid():
     qa = assess_yes_quote(0.48, 0.52, None, _settings())
     assert executable_yes_exit_price(qa, "yes") == 0.48
     assert executable_yes_exit_price(qa, "no") == 0.48  # 1 - 0.52
+
+
+def test_wide_spread_last_trade_is_not_signal_or_exit_quality():
+    qa = assess_yes_quote(0.02, 0.99, 0.50, _settings())
+    assert qa.quality == "unusable_wide_spread"
+    assert qa.fair_yes_mid is None
+    assert not qa.is_signal_quality
+    assert not qa.is_exit_quality
+    assert executable_yes_exit_price(qa, "yes") is None
+    assert executable_yes_exit_price(qa, "no") is None

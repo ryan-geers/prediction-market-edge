@@ -398,21 +398,21 @@ class Storage:
             if mark.yes_bid is not None and mark.yes_ask is not None:
                 yes_bid = float(mark.yes_bid)
                 yes_ask = float(mark.yes_ask)
-                broken_no_book = yes_bid <= 0 and yes_ask >= 0.999
+                quote_reliable = bool(mark.quote_reliable)
                 rows = self.con.execute(
                     """
                     UPDATE paper_positions
                     SET
                       mark_price = CASE
-                        WHEN direction = 'yes' AND ? >= ? THEN ?
-                        WHEN direction = 'no' AND NOT ? THEN ?
+                        WHEN direction = 'yes' AND ? AND ? >= ? THEN ?
+                        WHEN direction = 'no' AND ? THEN ?
                         WHEN direction IS NULL AND ? IS NOT NULL THEN ?
                         ELSE mark_price
                       END,
                       unrealized_pnl = CASE
-                        WHEN direction = 'no' AND NOT ? THEN
+                        WHEN direction = 'no' AND ? THEN
                           ((1.0 - ?) - avg_entry_price) * net_qty
-                        WHEN direction = 'yes' AND ? >= ? THEN
+                        WHEN direction = 'yes' AND ? AND ? >= ? THEN
                           (? - avg_entry_price) * net_qty
                         WHEN direction IS NULL AND ? IS NOT NULL THEN
                           (? - avg_entry_price) * net_qty
@@ -423,22 +423,24 @@ class Storage:
                       AND contract_id = ?
                       AND venue = ?
                       AND (
-                        (direction = 'yes' AND ? >= ?)
-                        OR (direction = 'no' AND NOT ?)
+                        (direction = 'yes' AND ? AND ? >= ?)
+                        OR (direction = 'no' AND ?)
                         OR (direction IS NULL AND ? IS NOT NULL)
                       )
                     RETURNING position_id
                     """,
                     [
+                        quote_reliable,
                         yes_bid,
                         min_bid,
                         yes_bid,
-                        broken_no_book,
+                        quote_reliable,
                         yes_ask,
                         mark.mark_price,
                         mark.mark_price,
-                        broken_no_book,
+                        quote_reliable,
                         yes_ask,
+                        quote_reliable,
                         yes_bid,
                         min_bid,
                         yes_bid,
@@ -447,9 +449,10 @@ class Storage:
                         mark.last_mark_time_utc,
                         mark.contract_id,
                         mark.venue,
+                        quote_reliable,
                         yes_bid,
                         min_bid,
-                        broken_no_book,
+                        quote_reliable,
                         mark.mark_price,
                     ],
                 ).fetchall()
