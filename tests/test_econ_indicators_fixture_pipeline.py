@@ -99,3 +99,37 @@ def test_signal_block_long_no_when_model_favors_yes(tmp_path: Path) -> None:
     assert len(signals) == 1
     assert signals[0].decision == "hold"
     assert "blocked_by_no_fade_policy" in signals[0].decision_reason
+
+
+def test_one_sided_ask_does_not_emit_long_no_signal(tmp_path: Path) -> None:
+    """A missing YES bid means the implied NO ask is pinned near 1.0."""
+    settings = Settings(duckdb_path=tmp_path / "db.duckdb", data_dir=tmp_path, edge_threshold_bps=300)
+    thesis = EconomicIndicatorsThesis(settings)
+    fc = {
+        "market": [
+            {
+                "venue": "KALSHI",
+                "contract_id": "SYN-CPI-ONE-SIDED",
+                "label": "synthetic",
+                "best_bid": 0.0,
+                "best_ask": 0.10,
+                "last_trade": None,
+                "contract_type": "cpi",
+                "is_stub": False,
+            }
+        ],
+        "model_probability": 0.01,
+        "predicted_cpi_mom_pct": 0.0,
+        "validation_rmse": 0.5,
+        "walk_forward_val_rmse": 0.5,
+        "macro_history_count": 100,
+        "model_healthy": True,
+        "un_reg": None,
+        "un_healthy": False,
+    }
+
+    signals, _ = thesis.generate_signals("r-one-sided", fc)
+
+    assert len(signals) == 1
+    assert signals[0].decision == "hold"
+    assert "quote_unusable_for_long_no=true" in signals[0].decision_reason

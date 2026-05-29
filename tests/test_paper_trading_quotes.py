@@ -53,3 +53,47 @@ def test_flip_blocked_on_empty_book():
     )
     closes = apply_exits([pos], [_flip_signal()], [_broken_snap()], settings)
     assert closes == []
+
+
+def test_no_flip_blocked_on_high_ask_empty_book():
+    settings = Settings(paper_exit_on_flip=True, paper_skip_exit_on_unreliable_quote=True)
+    pos = PaperPositionRecord(
+        run_id="r",
+        signal_id="s",
+        venue="kalshi",
+        contract_id="KXECONSTATU3-26AUG-T5.0",
+        net_qty=100.0,
+        avg_entry_price=0.55,
+        unrealized_pnl=-40.0,
+        status="open",
+        direction="no",
+    )
+    signal = _flip_signal().model_copy(
+        update={
+            "edge_bps": 5000.0,
+            "bid_price": 0.0,
+            "ask_price": 0.99,
+            "decision_reason": "contract_type=unemployment;quote_quality=unusable_empty_book",
+        }
+    )
+    snap = _broken_snap().model_copy(update={"best_ask": 0.99, "last_trade": None})
+    closes = apply_exits([pos], [signal], [snap], settings)
+    assert closes == []
+
+
+def test_no_stop_loss_blocked_on_high_ask_empty_book():
+    settings = Settings(paper_stop_loss_pct=0.15, paper_skip_exit_on_unreliable_quote=True)
+    pos = PaperPositionRecord(
+        run_id="r",
+        signal_id="s",
+        venue="kalshi",
+        contract_id="KXECONSTATU3-26AUG-T5.0",
+        net_qty=100.0,
+        avg_entry_price=0.55,
+        unrealized_pnl=-40.0,
+        status="open",
+        direction="no",
+    )
+    snap = _broken_snap().model_copy(update={"best_ask": 0.99, "last_trade": None})
+    closes = apply_exits([pos], [], [snap], settings)
+    assert closes == []

@@ -133,22 +133,9 @@ def assess_yes_quote(
             yes_ask_for_exit=ask,
         )
 
-    # Two prices present but spread too wide — fall back to last trade if sane.
+    # Two prices present but spread too wide. A last trade has no freshness signal
+    # here, so do not let it override an untradeable current book.
     if bid >= min_bid and ask > bid and sp > max_spread:
-        lt_mid = _last_trade_mid()
-        if lt_mid is not None:
-            exit_ok = bid >= min_bid
-            return YesQuoteAssessment(
-                best_bid=bid,
-                best_ask=ask,
-                fair_yes_mid=lt_mid,
-                spread_bps=sp,
-                quality="last_trade_wide_spread",
-                is_signal_quality=True,
-                is_exit_quality=exit_ok,
-                yes_bid_for_exit=bid if exit_ok else 0.0,
-                yes_ask_for_exit=ask,
-            )
         return YesQuoteAssessment(
             best_bid=bid,
             best_ask=ask,
@@ -197,11 +184,11 @@ def mark_yes_for_direction(assessment: YesQuoteAssessment, direction: str | None
     Returns ``None`` when the quote is too broken to re-mark (caller keeps prior mark).
     """
     if direction == "yes":
-        if assessment.yes_bid_for_exit <= 0:
+        if not assessment.is_exit_quality or assessment.yes_bid_for_exit <= 0:
             return None
         return assessment.yes_bid_for_exit
     if direction == "no":
-        if assessment.best_ask >= 1.0 - 1e-9 and assessment.yes_bid_for_exit <= 0:
+        if not assessment.is_exit_quality:
             return None
         return assessment.yes_ask_for_exit
     return assessment.fair_yes_mid
@@ -218,7 +205,7 @@ def executable_yes_exit_price(
         return assessment.yes_bid_for_exit
     if direction == "no":
         # NO exit mark in position price space: 1 - yes_ask
-        if assessment.best_ask >= 1.0 - 1e-9 and assessment.yes_bid_for_exit <= 0:
+        if not assessment.is_exit_quality:
             return None
         return 1.0 - assessment.yes_ask_for_exit
     return None

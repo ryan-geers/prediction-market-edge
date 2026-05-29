@@ -127,6 +127,37 @@ def test_mark_no_matching_open_positions_returns_zero(tmp_path: Path) -> None:
     assert updated == 0
 
 
+def test_unreliable_quote_does_not_remark_no_position(tmp_path: Path) -> None:
+    """Long NO rows must keep their prior mark on empty one-sided YES books."""
+    st = Storage(tmp_path / "t.duckdb")
+    pos = _open_position(avg_entry_price=0.55, net_qty=100.0).model_copy(
+        update={"direction": "no", "mark_price": 0.45, "unrealized_pnl": 1.23}
+    )
+    st.insert_positions([pos])
+
+    mark = PositionMark(
+        contract_id="CPI-TEST",
+        venue="KALSHI",
+        mark_price=0.99,
+        yes_bid=0.0,
+        yes_ask=0.99,
+        quote_reliable=False,
+    )
+    updated = st.mark_open_positions([mark])
+    st.close()
+
+    assert updated == 0
+    con = duckdb.connect(str(tmp_path / "t.duckdb"))
+    row = con.execute(
+        "SELECT mark_price, unrealized_pnl FROM paper_positions WHERE position_id = ?",
+        [pos.position_id],
+    ).fetchone()
+    con.close()
+    assert row is not None
+    assert abs(row[0] - 0.45) < 1e-9
+    assert abs(row[1] - 1.23) < 1e-9
+
+
 # ── Phase 2: close_positions / get_open_positions ─────────────────────────────
 
 def test_close_positions_updates_status_and_pnl(tmp_path: Path) -> None:
