@@ -53,3 +53,25 @@ def test_flip_blocked_on_empty_book():
     )
     closes = apply_exits([pos], [_flip_signal()], [_broken_snap()], settings)
     assert closes == []
+
+
+def test_stop_loss_legacy_null_direction_blocked_on_empty_book():
+    settings = Settings(
+        paper_exit_on_flip=False,
+        paper_stop_loss_pct=0.15,
+        paper_skip_exit_on_unreliable_quote=True,
+    )
+    pos = PaperPositionRecord(
+        run_id="r",
+        signal_id="s",
+        venue="kalshi",
+        contract_id="KXECONSTATU3-26AUG-T5.0",
+        net_qty=100.0,
+        avg_entry_price=0.80,
+        unrealized_pnl=-40.0,
+        mark_price=0.50,
+        status="open",
+        direction=None,
+    )
+    closes = apply_exits([pos], [], [_broken_snap()], settings)
+    assert closes == []

@@ -127,6 +127,36 @@ def test_mark_no_matching_open_positions_returns_zero(tmp_path: Path) -> None:
     assert updated == 0
 
 
+def test_mark_skips_legacy_null_direction_on_empty_book(tmp_path: Path) -> None:
+    """Legacy null-direction rows must not be marked to a synthetic empty-book midpoint."""
+    st = Storage(tmp_path / "t.duckdb")
+    pos = _open_position(avg_entry_price=0.80, net_qty=100.0)
+    st.insert_positions([pos])
+
+    mark = PositionMark(
+        contract_id="CPI-TEST",
+        venue="KALSHI",
+        mark_price=0.50,
+        yes_bid=0.0,
+        yes_ask=1.0,
+        quote_reliable=False,
+    )
+    updated = st.mark_open_positions([mark])
+    st.close()
+
+    assert updated == 0
+    con = duckdb.connect(str(tmp_path / "t.duckdb"))
+    row = con.execute(
+        "SELECT mark_price, unrealized_pnl FROM paper_positions WHERE position_id = ?",
+        [pos.position_id],
+    ).fetchone()
+    con.close()
+
+    assert row is not None
+    assert abs(row[0] - 0.80) < 1e-9
+    assert row[1] == 0.0
+
+
 # ── Phase 2: close_positions / get_open_positions ─────────────────────────────
 
 def test_close_positions_updates_status_and_pnl(tmp_path: Path) -> None:
