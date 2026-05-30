@@ -406,7 +406,7 @@ class Storage:
                       mark_price = CASE
                         WHEN direction = 'yes' AND ? >= ? THEN ?
                         WHEN direction = 'no' AND NOT ? THEN ?
-                        WHEN direction IS NULL AND ? IS NOT NULL THEN ?
+                        WHEN direction IS NULL AND ? >= ? THEN ?
                         ELSE mark_price
                       END,
                       unrealized_pnl = CASE
@@ -414,7 +414,7 @@ class Storage:
                           ((1.0 - ?) - avg_entry_price) * net_qty
                         WHEN direction = 'yes' AND ? >= ? THEN
                           (? - avg_entry_price) * net_qty
-                        WHEN direction IS NULL AND ? IS NOT NULL THEN
+                        WHEN direction IS NULL AND ? >= ? THEN
                           (? - avg_entry_price) * net_qty
                         ELSE unrealized_pnl
                       END,
@@ -425,7 +425,7 @@ class Storage:
                       AND (
                         (direction = 'yes' AND ? >= ?)
                         OR (direction = 'no' AND NOT ?)
-                        OR (direction IS NULL AND ? IS NOT NULL)
+                        OR (direction IS NULL AND ? >= ?)
                       )
                     RETURNING position_id
                     """,
@@ -435,22 +435,25 @@ class Storage:
                         yes_bid,
                         broken_no_book,
                         yes_ask,
-                        mark.mark_price,
-                        mark.mark_price,
+                        yes_bid,
+                        min_bid,
+                        yes_bid,
                         broken_no_book,
                         yes_ask,
                         yes_bid,
                         min_bid,
                         yes_bid,
-                        mark.mark_price,
-                        mark.mark_price,
+                        yes_bid,
+                        min_bid,
+                        yes_bid,
                         mark.last_mark_time_utc,
                         mark.contract_id,
                         mark.venue,
                         yes_bid,
                         min_bid,
                         broken_no_book,
-                        mark.mark_price,
+                        yes_bid,
+                        min_bid,
                     ],
                 ).fetchall()
             else:
