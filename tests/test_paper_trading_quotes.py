@@ -53,3 +53,32 @@ def test_flip_blocked_on_empty_book():
     )
     closes = apply_exits([pos], [_flip_signal()], [_broken_snap()], settings)
     assert closes == []
+
+
+def test_flip_without_unreliable_skip_uses_bid_not_ask_proxy():
+    settings = Settings(paper_exit_on_flip=True, paper_skip_exit_on_unreliable_quote=False)
+    pos = PaperPositionRecord(
+        run_id="r",
+        signal_id="s",
+        venue="kalshi",
+        contract_id="KXECONSTATU3-26AUG-T5.0",
+        net_qty=100.0,
+        avg_entry_price=0.50,
+        status="open",
+        direction="yes",
+    )
+    signal = _flip_signal().model_copy(
+        update={
+            "ask_price": 0.10,
+            "decision_reason": "contract_type=unemployment;quote_quality=one_sided_ask_proxy",
+        }
+    )
+    snap = _broken_snap().model_copy(
+        update={"best_ask": 0.10, "last_trade": None, "mid_price": 0.10}
+    )
+
+    closes = apply_exits([pos], [signal], [snap], settings)
+
+    assert len(closes) == 1
+    assert closes[0].avg_exit_price == 0.0
+    assert closes[0].realized_pnl == -50.0
