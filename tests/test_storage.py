@@ -247,6 +247,65 @@ def test_mark_updates_last_mark_time(tmp_path: Path) -> None:
     assert ts is not None and ts[0] is not None
 
 
+def test_mark_null_direction_skips_broken_book(tmp_path: Path) -> None:
+    """Legacy directionless rows must not use synthetic mids from empty books."""
+    st = Storage(tmp_path / "t.duckdb")
+    pos = _open_position(avg_entry_price=0.10, net_qty=100.0)
+    st.insert_positions([pos])
+
+    mark = PositionMark(
+        contract_id="CPI-TEST",
+        venue="KALSHI",
+        mark_price=0.50,
+        yes_bid=0.0,
+        yes_ask=1.0,
+        quote_reliable=False,
+    )
+    updated = st.mark_open_positions([mark])
+    st.close()
+
+    assert updated == 0
+    con = duckdb.connect(str(tmp_path / "t.duckdb"))
+    row = con.execute(
+        "SELECT mark_price, unrealized_pnl FROM paper_positions WHERE position_id = ?",
+        [pos.position_id],
+    ).fetchone()
+    con.close()
+
+    assert row is not None
+    assert row[0] == 0.10
+    assert row[1] == 0.0
+
+
+def test_mark_null_direction_uses_yes_bid_when_quote_is_executable(tmp_path: Path) -> None:
+    """Legacy directionless rows are marked like long YES positions."""
+    st = Storage(tmp_path / "t.duckdb")
+    pos = _open_position(avg_entry_price=0.10, net_qty=100.0)
+    st.insert_positions([pos])
+
+    mark = PositionMark(
+        contract_id="CPI-TEST",
+        venue="KALSHI",
+        mark_price=0.25,
+        yes_bid=0.20,
+        yes_ask=0.30,
+    )
+    updated = st.mark_open_positions([mark])
+    st.close()
+
+    assert updated == 1
+    con = duckdb.connect(str(tmp_path / "t.duckdb"))
+    row = con.execute(
+        "SELECT mark_price, unrealized_pnl FROM paper_positions WHERE position_id = ?",
+        [pos.position_id],
+    ).fetchone()
+    con.close()
+
+    assert row is not None
+    assert abs(row[0] - 0.20) < 1e-9
+    assert abs(row[1] - 10.0) < 1e-9
+
+
 # ── Phase 3: get_open_position / add_to_position ───────────────────────────────
 
 def test_get_open_position_returns_matching_row(tmp_path: Path) -> None:

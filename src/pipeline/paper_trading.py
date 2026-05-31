@@ -94,6 +94,15 @@ def _quote_assessment(
     return None
 
 
+def _conservative_quote_exit_price(qa, direction: str | None) -> float | None:
+    """Return the sellable position-space price implied by the current YES quote."""
+    if direction == "yes":
+        return qa.yes_bid_for_exit
+    if direction == "no":
+        return 1.0 - qa.yes_ask_for_exit
+    return qa.fair_yes_mid
+
+
 def apply_exits(
     open_positions: list[PaperPositionRecord],
     signals: list[SignalRecord],
@@ -147,13 +156,9 @@ def apply_exits(
                         if exit_px is None:
                             continue
                     else:
-                        snap = snap_by_contract.get(key)
-                        yes_mid = (
-                            qa.fair_yes_mid
-                            if qa.fair_yes_mid is not None
-                            else (snap.mid_price if snap else float(sig.market_implied_probability))
-                        )
-                        exit_px = yes_mid if pos.direction == "yes" else (1.0 - yes_mid)
+                        exit_px = _conservative_quote_exit_price(qa, pos.direction)
+                        if exit_px is None:
+                            continue
                     realized = (exit_px - pos.avg_entry_price) * pos.net_qty
                     closes.append(
                         PositionClose(
@@ -184,9 +189,10 @@ def apply_exits(
                         )
                         if exit_px is None:
                             continue
-                    elif qa is not None and qa.fair_yes_mid is not None:
-                        yes_mid = qa.fair_yes_mid
-                        exit_px = yes_mid if (pos.direction != "no") else (1.0 - yes_mid)
+                    elif qa is not None:
+                        exit_px = _conservative_quote_exit_price(qa, pos.direction)
+                        if exit_px is None:
+                            continue
                     else:
                         yes_mid = (
                             snap.mid_price
