@@ -39,6 +39,18 @@ def _broken_snap() -> MarketSnapshotRecord:
     )
 
 
+def _unusable_high_ask_snap() -> MarketSnapshotRecord:
+    return MarketSnapshotRecord(
+        venue="kalshi",
+        contract_id="KXECONSTATU3-26AUG-T5.0",
+        best_bid=0.0,
+        best_ask=0.95,
+        last_trade=0.0,
+        mid_price=0.95,
+        spread_bps=0.0,
+    )
+
+
 def test_flip_blocked_on_empty_book():
     settings = Settings(paper_exit_on_flip=True, paper_skip_exit_on_unreliable_quote=True)
     pos = PaperPositionRecord(
@@ -52,4 +64,26 @@ def test_flip_blocked_on_empty_book():
         direction="yes",
     )
     closes = apply_exits([pos], [_flip_signal()], [_broken_snap()], settings)
+    assert closes == []
+
+
+def test_no_stop_loss_blocked_on_unusable_high_ask():
+    settings = Settings(
+        paper_exit_on_flip=False,
+        paper_stop_loss_pct=0.15,
+        paper_skip_exit_on_unreliable_quote=True,
+    )
+    pos = PaperPositionRecord(
+        run_id="r",
+        signal_id="s",
+        venue="kalshi",
+        contract_id="KXECONSTATU3-26AUG-T5.0",
+        net_qty=100.0,
+        avg_entry_price=0.55,
+        unrealized_pnl=-20.0,
+        mark_price=0.45,
+        status="open",
+        direction="no",
+    )
+    closes = apply_exits([pos], [], [_unusable_high_ask_snap()], settings)
     assert closes == []

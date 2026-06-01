@@ -247,6 +247,37 @@ def test_mark_updates_last_mark_time(tmp_path: Path) -> None:
     assert ts is not None and ts[0] is not None
 
 
+def test_mark_skips_no_position_when_quote_unreliable(tmp_path: Path) -> None:
+    """Unusable empty-book quotes must not overwrite long-NO marks."""
+    st = Storage(tmp_path / "t.duckdb")
+    pos = _open_position(avg_entry_price=0.55, net_qty=100.0)
+    pos = pos.model_copy(update={"direction": "no", "mark_price": 0.45})
+    st.insert_positions([pos])
+
+    mark = PositionMark(
+        contract_id="CPI-TEST",
+        venue="KALSHI",
+        mark_price=0.95,
+        yes_bid=0.0,
+        yes_ask=0.95,
+        quote_reliable=False,
+    )
+    updated = st.mark_open_positions([mark])
+    st.close()
+
+    assert updated == 0
+    con = duckdb.connect(str(tmp_path / "t.duckdb"))
+    row = con.execute(
+        "SELECT mark_price, unrealized_pnl FROM paper_positions WHERE position_id = ?",
+        [pos.position_id],
+    ).fetchone()
+    con.close()
+
+    assert row is not None
+    assert abs(row[0] - 0.45) < 1e-9
+    assert abs(row[1]) < 1e-9
+
+
 # ── Phase 3: get_open_position / add_to_position ───────────────────────────────
 
 def test_get_open_position_returns_matching_row(tmp_path: Path) -> None:

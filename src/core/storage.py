@@ -398,23 +398,24 @@ class Storage:
             if mark.yes_bid is not None and mark.yes_ask is not None:
                 yes_bid = float(mark.yes_bid)
                 yes_ask = float(mark.yes_ask)
-                broken_no_book = yes_bid <= 0 and yes_ask >= 0.999
+                can_mark_no = bool(mark.quote_reliable)
+                can_mark_fallback = bool(mark.quote_reliable) and mark.mark_price is not None
                 rows = self.con.execute(
                     """
                     UPDATE paper_positions
                     SET
                       mark_price = CASE
                         WHEN direction = 'yes' AND ? >= ? THEN ?
-                        WHEN direction = 'no' AND NOT ? THEN ?
-                        WHEN direction IS NULL AND ? IS NOT NULL THEN ?
+                        WHEN direction = 'no' AND ? THEN ?
+                        WHEN direction IS NULL AND ? THEN ?
                         ELSE mark_price
                       END,
                       unrealized_pnl = CASE
-                        WHEN direction = 'no' AND NOT ? THEN
+                        WHEN direction = 'no' AND ? THEN
                           ((1.0 - ?) - avg_entry_price) * net_qty
                         WHEN direction = 'yes' AND ? >= ? THEN
                           (? - avg_entry_price) * net_qty
-                        WHEN direction IS NULL AND ? IS NOT NULL THEN
+                        WHEN direction IS NULL AND ? THEN
                           (? - avg_entry_price) * net_qty
                         ELSE unrealized_pnl
                       END,
@@ -424,8 +425,8 @@ class Storage:
                       AND venue = ?
                       AND (
                         (direction = 'yes' AND ? >= ?)
-                        OR (direction = 'no' AND NOT ?)
-                        OR (direction IS NULL AND ? IS NOT NULL)
+                        OR (direction = 'no' AND ?)
+                        OR (direction IS NULL AND ?)
                       )
                     RETURNING position_id
                     """,
@@ -433,24 +434,24 @@ class Storage:
                         yes_bid,
                         min_bid,
                         yes_bid,
-                        broken_no_book,
+                        can_mark_no,
                         yes_ask,
+                        can_mark_fallback,
                         mark.mark_price,
-                        mark.mark_price,
-                        broken_no_book,
+                        can_mark_no,
                         yes_ask,
                         yes_bid,
                         min_bid,
                         yes_bid,
-                        mark.mark_price,
+                        can_mark_fallback,
                         mark.mark_price,
                         mark.last_mark_time_utc,
                         mark.contract_id,
                         mark.venue,
                         yes_bid,
                         min_bid,
-                        broken_no_book,
-                        mark.mark_price,
+                        can_mark_no,
+                        can_mark_fallback,
                     ],
                 ).fetchall()
             else:
