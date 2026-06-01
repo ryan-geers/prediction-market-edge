@@ -201,7 +201,7 @@ def mark_yes_for_direction(assessment: YesQuoteAssessment, direction: str | None
             return None
         return assessment.yes_bid_for_exit
     if direction == "no":
-        if assessment.best_ask >= 1.0 - 1e-9 and assessment.yes_bid_for_exit <= 0:
+        if not (assessment.is_exit_quality or assessment.fair_yes_mid is not None):
             return None
         return assessment.yes_ask_for_exit
     return assessment.fair_yes_mid
@@ -218,7 +218,7 @@ def executable_yes_exit_price(
         return assessment.yes_bid_for_exit
     if direction == "no":
         # NO exit mark in position price space: 1 - yes_ask
-        if assessment.best_ask >= 1.0 - 1e-9 and assessment.yes_bid_for_exit <= 0:
+        if not assessment.is_exit_quality:
             return None
         return 1.0 - assessment.yes_ask_for_exit
     return None

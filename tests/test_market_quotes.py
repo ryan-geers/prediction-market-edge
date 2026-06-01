@@ -32,6 +32,7 @@ def test_empty_book_bid_zero_ask_one_is_unusable():
     assert not qa.is_signal_quality
     assert not qa.is_exit_quality
     assert executable_yes_exit_price(qa, "yes") is None
+    assert executable_yes_exit_price(qa, "no") is None
 
 
 def test_one_sided_low_ask_allows_signal_but_not_exit():
@@ -41,6 +42,7 @@ def test_one_sided_low_ask_allows_signal_but_not_exit():
     assert qa.is_signal_quality
     assert not qa.is_exit_quality
     assert executable_yes_exit_price(qa, "yes") is None
+    assert executable_yes_exit_price(qa, "no") is None
 
 
 def test_last_trade_used_when_one_sided():
