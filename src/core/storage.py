@@ -387,7 +387,9 @@ class Storage:
 
         When ``yes_bid`` / ``yes_ask`` are set on the mark, uses direction-aware
         executable prices (long YES → bid, long NO → yes ask). Skips rows when
-        the quote is too broken to mark (e.g. bid=0 for a long YES).
+        the quote is too broken to mark (e.g. bid=0 for a long YES). Legacy rows
+        with ``direction IS NULL`` only consume assessed fair mids, never rejected
+        snapshot fallbacks.
 
         ``mark_price`` in the DB always stores the YES-side reference used by the
         unrealized PnL formula in :meth:`add_to_position`.
@@ -399,6 +401,7 @@ class Storage:
                 yes_bid = float(mark.yes_bid)
                 yes_ask = float(mark.yes_ask)
                 broken_no_book = yes_bid <= 0 and yes_ask >= 0.999
+                reliable_mid = mark.mark_price is not None and mark.quote_reliable
                 rows = self.con.execute(
                     """
                     UPDATE paper_positions
@@ -406,7 +409,7 @@ class Storage:
                       mark_price = CASE
                         WHEN direction = 'yes' AND ? >= ? THEN ?
                         WHEN direction = 'no' AND NOT ? THEN ?
-                        WHEN direction IS NULL AND ? IS NOT NULL THEN ?
+                        WHEN direction IS NULL AND ? THEN ?
                         ELSE mark_price
                       END,
                       unrealized_pnl = CASE
@@ -414,7 +417,7 @@ class Storage:
                           ((1.0 - ?) - avg_entry_price) * net_qty
                         WHEN direction = 'yes' AND ? >= ? THEN
                           (? - avg_entry_price) * net_qty
-                        WHEN direction IS NULL AND ? IS NOT NULL THEN
+                        WHEN direction IS NULL AND ? THEN
                           (? - avg_entry_price) * net_qty
                         ELSE unrealized_pnl
                       END,
@@ -425,7 +428,7 @@ class Storage:
                       AND (
                         (direction = 'yes' AND ? >= ?)
                         OR (direction = 'no' AND NOT ?)
-                        OR (direction IS NULL AND ? IS NOT NULL)
+                        OR (direction IS NULL AND ?)
                       )
                     RETURNING position_id
                     """,
@@ -435,14 +438,14 @@ class Storage:
                         yes_bid,
                         broken_no_book,
                         yes_ask,
-                        mark.mark_price,
+                        reliable_mid,
                         mark.mark_price,
                         broken_no_book,
                         yes_ask,
                         yes_bid,
                         min_bid,
                         yes_bid,
-                        mark.mark_price,
+                        reliable_mid,
                         mark.mark_price,
                         mark.last_mark_time_utc,
                         mark.contract_id,
@@ -450,7 +453,7 @@ class Storage:
                         yes_bid,
                         min_bid,
                         broken_no_book,
-                        mark.mark_price,
+                        reliable_mid,
                     ],
                 ).fetchall()
             else:

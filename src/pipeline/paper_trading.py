@@ -178,12 +178,17 @@ def apply_exits(
                 if loss_pct < -abs(settings.paper_stop_loss_pct):
                     snap = snap_by_contract.get(key)
                     qa = _quote_assessment(snap, None, settings)
-                    if settings.paper_skip_exit_on_unreliable_quote and pos.direction is not None:
-                        exit_px = (
-                            executable_yes_exit_price(qa, pos.direction) if qa is not None else None
-                        )
-                        if exit_px is None:
-                            continue
+                    if settings.paper_skip_exit_on_unreliable_quote:
+                        if pos.direction is not None:
+                            exit_px = (
+                                executable_yes_exit_price(qa, pos.direction) if qa is not None else None
+                            )
+                            if exit_px is None:
+                                continue
+                        else:
+                            if qa is None or qa.fair_yes_mid is None:
+                                continue
+                            exit_px = qa.fair_yes_mid
                     elif qa is not None and qa.fair_yes_mid is not None:
                         yes_mid = qa.fair_yes_mid
                         exit_px = yes_mid if (pos.direction != "no") else (1.0 - yes_mid)

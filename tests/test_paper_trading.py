@@ -213,6 +213,34 @@ def test_apply_exits_stop_loss_fires_at_threshold():
     assert closes[0].close_reason == "stop_loss"
 
 
+def test_apply_exits_stop_loss_skips_directionless_unreliable_quote():
+    """Legacy directionless rows should not close from rejected empty-book mids."""
+    settings = Settings(
+        paper_stop_loss_pct=0.15,
+        paper_exit_on_flip=False,
+        paper_skip_exit_on_unreliable_quote=True,
+    )
+    pos = _open_position(
+        direction=None,  # type: ignore[arg-type]
+        avg_entry_price=0.50,
+        net_qty=50.0,
+        unrealized_pnl=-5.0,
+    )
+    snap = MarketSnapshotRecord(
+        venue="KALSHI",
+        contract_id="CPI-TEST",
+        best_bid=0.0,
+        best_ask=1.0,
+        last_trade=0.0,
+        mid_price=1.0,
+        spread_bps=0.0,
+    )
+
+    closes = apply_exits([pos], [], [snap], settings)
+
+    assert closes == []
+
+
 def test_apply_exits_stop_loss_does_not_fire_below_threshold():
     """Rule B: no close when loss is smaller than the threshold."""
     settings = Settings(paper_stop_loss_pct=0.15, paper_exit_on_flip=False)
