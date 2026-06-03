@@ -255,6 +255,9 @@ class EconomicIndicatorsThesis(ThesisModule):
             ):
                 decision = "hold"
                 health_note = ";blocked_by_no_fade_policy"
+            elif decision == "enter_long_no" and qa.yes_bid_for_exit <= 0:
+                decision = "hold"
+                health_note = f";quote_no_bid_for_no_entry=true{quote_note}"
 
             signal = SignalRecord(
                 run_id=run_id,
