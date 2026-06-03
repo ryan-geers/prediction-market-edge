@@ -5,6 +5,7 @@ from src.core.market_quotes import (
     assess_yes_quote,
     executable_yes_exit_price,
 )
+from src.theses.economic_indicators.module import EconomicIndicatorsThesis
 
 
 def _settings() -> Settings:
@@ -54,3 +55,36 @@ def test_executable_yes_exit_uses_bid():
     qa = assess_yes_quote(0.48, 0.52, None, _settings())
     assert executable_yes_exit_price(qa, "yes") == 0.48
     assert executable_yes_exit_price(qa, "no") == 0.48  # 1 - 0.52
+
+
+def test_one_sided_ask_does_not_generate_long_no_signal():
+    thesis = EconomicIndicatorsThesis(_settings())
+    forecast = {
+        "model_healthy": True,
+        "un_healthy": False,
+        "un_reg": None,
+        "market": [
+            {
+                "venue": "kalshi",
+                "contract_id": "KXCPI-26MAY-T0.3",
+                "label": "CPI over 0.3%",
+                "best_bid": 0.0,
+                "best_ask": 0.10,
+                "last_trade": None,
+                "series_ticker": "KXCPI",
+                "contract_type": "cpi",
+                "threshold": 0.3,
+            }
+        ],
+        "model_probability": 0.05,
+        "predicted_cpi_mom_pct": 0.0,
+        "validation_rmse": 0.1,
+        "walk_forward_val_rmse": 0.1,
+        "macro_history_count": 24,
+    }
+
+    signals, _ = thesis.generate_signals("run-test", forecast)
+
+    assert len(signals) == 1
+    assert signals[0].decision == "hold"
+    assert "quote_no_bid_for_no_entry=true" in signals[0].decision_reason

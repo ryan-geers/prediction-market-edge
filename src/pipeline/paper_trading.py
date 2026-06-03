@@ -352,6 +352,8 @@ def simulate_paper_trades(
         side: str = "yes" if signal.decision == "enter_long_yes" else "no"
         yes_mid = float(signal.market_implied_probability)
         qa = assess_yes_quote(signal.bid_price, signal.ask_price, None, settings)
+        if side == "no" and qa.yes_bid_for_exit <= 0:
+            continue
         if side == "yes":
             raw_fill = _apply_slippage_to_yes_ask(signal.ask_price, slippage)
         else:
