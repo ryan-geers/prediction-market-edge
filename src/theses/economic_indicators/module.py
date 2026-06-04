@@ -1,3 +1,4 @@
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -105,14 +106,22 @@ class EconomicIndicatorsThesis(ThesisModule):
             cpi_reg.prediction, threshold_pct=cpi_mom_threshold_pct, scale=12.0
         )
         cpi_val_rmse = cpi_reg.rmse
-        cpi_healthy = cpi_val_rmse >= 1e-6 and abs(cpi_reg.prediction) > 1e-6
+        # Plausibility gate: block CPI signals when the predicted m/m change is outside
+        # the historical range of headline CPI (roughly -0.5% to +2.5%). A prediction
+        # of e.g. -0.3% implies deflation that has not occurred in modern US data and
+        # is almost certainly a training-data or feature-scale issue.
+        _CPI_PRED_MIN, _CPI_PRED_MAX = -0.5, 2.5
+        prediction_in_range = _CPI_PRED_MIN <= cpi_reg.prediction <= _CPI_PRED_MAX
+        cpi_healthy = cpi_val_rmse >= 1e-6 and abs(cpi_reg.prediction) > 1e-6 and prediction_in_range
         if not cpi_healthy:
             LOGGER.warning(
                 "CPI model health check failed — blocking CPI signals. "
-                "val_rmse=%.2e, prediction=%.6f. "
+                "val_rmse=%.2e, prediction=%.6f (allowed range [%.1f, %.1f]). "
                 "Check that training frame is monthly and has non-zero CPI targets.",
                 cpi_val_rmse,
                 cpi_reg.prediction,
+                _CPI_PRED_MIN,
+                _CPI_PRED_MAX,
             )
 
         # --- Unemployment model ---
@@ -153,7 +162,7 @@ class EconomicIndicatorsThesis(ThesisModule):
             "un_model_probability": unrate_to_yes_probability(
                 un_reg.prediction if un_reg else self.settings.unemployment_threshold_pct,
                 threshold=self.settings.unemployment_threshold_pct,
-            ) if not un_healthy else None,
+            ) if un_healthy else None,
             "un_reg": un_reg,
             "un_healthy": un_healthy,
             # Shared
@@ -182,17 +191,16 @@ class EconomicIndicatorsThesis(ThesisModule):
             mid = qa.fair_yes_mid
             spread = qa.spread_bps if qa.spread_bps != float("inf") else _spread_bps(bid, ask)
             contract_type = contract.get("contract_type", "unknown")
-            quote_note = f";quote_quality={qa.quality}"
 
             if contract_type in _CPI_CONTRACT_TYPES:
                 model_probability = forecast["model_probability"]
                 is_healthy = cpi_healthy
-                decision_extras = (
-                    f"pred_cpi_mom_pct={forecast.get('predicted_cpi_mom_pct', 0):.3f};"
-                    f"val_rmse={forecast['validation_rmse']:.4f};"
-                    f"wf_val_rmse={forecast.get('walk_forward_val_rmse', 0):.4f};"
-                    f"history_rows={forecast['macro_history_count']}"
-                )
+                reason_extras: dict = {
+                    "pred_cpi_mom_pct": round(float(forecast.get("predicted_cpi_mom_pct", 0)), 4),
+                    "val_rmse": round(forecast["validation_rmse"], 4),
+                    "wf_val_rmse": round(float(forecast.get("walk_forward_val_rmse", 0)), 4),
+                    "history_rows": forecast["macro_history_count"],
+                }
                 model_version = "econ_regression_v2"
                 feature_version = "econ_features_v2"
 
@@ -211,14 +219,13 @@ class EconomicIndicatorsThesis(ThesisModule):
                 else:
                     model_probability = 0.5  # neutral when model is unhealthy
                 is_healthy = un_healthy
-                decision_extras = (
-                    f"pred_unrate={un_reg.prediction:.3f};" if un_reg else "pred_unrate=N/A;"
-                ) + (
-                    f"threshold={threshold:.1f};"
-                    f"val_rmse={un_reg.rmse:.4f};" if un_reg else "val_rmse=N/A;"
-                ) + (
-                    f"wf_val_rmse={un_reg.walk_forward_val_rmse:.4f};" if un_reg else ""
-                ) + f"history_rows={forecast['macro_history_count']}"
+                reason_extras = {
+                    "pred_unrate": round(un_reg.prediction, 3) if un_reg else None,
+                    "threshold": round(float(threshold), 1),
+                    "val_rmse": round(un_reg.rmse, 4) if un_reg else None,
+                    "wf_val_rmse": round(un_reg.walk_forward_val_rmse, 4) if un_reg else None,
+                    "history_rows": forecast["macro_history_count"],
+                }
                 model_version = "unrate_ar_v1"
                 feature_version = "unrate_ar_features_v1"
 
@@ -226,27 +233,28 @@ class EconomicIndicatorsThesis(ThesisModule):
                 # Unknown contract type — always hold.
                 model_probability = mid if mid is not None else 0.5
                 is_healthy = False
-                decision_extras = f"contract_type=unknown;series={contract.get('series_ticker', '')}"
+                reason_extras = {"series": contract.get("series_ticker", "")}
                 model_version = "none"
                 feature_version = "none"
 
             edge_bps = (model_probability - mid) * 10000 if mid is not None else 0.0
 
+            quote_unusable = False
+            blocked_by_health = False
+            blocked_by_policy = False
+
             if mid is None or not qa.is_signal_quality:
                 decision = "hold"
-                health_note = f";quote_unusable=true{quote_note}"
+                quote_unusable = True
             elif not is_healthy:
                 decision = "hold"
-                health_note = ";model_healthy=false;blocked_by_health_gate"
+                blocked_by_health = True
             elif edge_bps > self.settings.edge_threshold_bps:
                 decision = "enter_long_yes"
-                health_note = quote_note
             elif edge_bps < (-1 * self.settings.edge_threshold_bps):
                 decision = "enter_long_no"
-                health_note = quote_note
             else:
                 decision = "hold"
-                health_note = quote_note
 
             if (
                 self.settings.signal_block_long_no_when_model_favors_yes
@@ -254,7 +262,23 @@ class EconomicIndicatorsThesis(ThesisModule):
                 and model_probability > 0.5
             ):
                 decision = "hold"
-                health_note = ";blocked_by_no_fade_policy"
+                blocked_by_policy = True
+
+            reason_dict: dict = {
+                "contract_type": contract_type,
+                "model_vs_mid_edge_bps": round(edge_bps, 2),
+                **reason_extras,
+                "quote_quality": qa.quality,
+            }
+            if quote_unusable:
+                reason_dict["quote_unusable"] = True
+            if blocked_by_health:
+                reason_dict["model_healthy"] = False
+                reason_dict["blocked_by_health_gate"] = True
+            if blocked_by_policy:
+                reason_dict["blocked_by_no_fade_policy"] = True
+            if contract.get("is_stub"):
+                reason_dict["data_source"] = "kalshi_stub"
 
             signal = SignalRecord(
                 run_id=run_id,
@@ -270,13 +294,7 @@ class EconomicIndicatorsThesis(ThesisModule):
                 spread_bps=spread,
                 vig_adjusted_threshold_bps=float(self.settings.edge_threshold_bps),
                 decision=decision,
-                decision_reason=(
-                    f"contract_type={contract_type};"
-                    f"model_vs_mid_edge_bps={edge_bps:.2f};"
-                    + decision_extras
-                    + health_note
-                    + (";data_source=kalshi_stub" if contract.get("is_stub") else "")
-                ),
+                decision_reason=json.dumps(reason_dict, separators=(",", ":")),
                 model_version=model_version,
                 feature_set_version=feature_version,
                 assumption_version=self.settings.paper_assumption_version,
@@ -293,6 +311,7 @@ class EconomicIndicatorsThesis(ThesisModule):
                     last_trade=last_trade,
                     mid_price=snap_mid,
                     spread_bps=spread,
+                    source_latency_ms=int(contract.get("source_latency_ms") or 0),
                 )
             )
 

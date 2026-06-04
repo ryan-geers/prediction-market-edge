@@ -4,6 +4,7 @@ with slippage, fee assumptions, and mark-to-market (optional same-run EOD close)
 """
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -137,7 +138,12 @@ def apply_exits(
                 flip_yes = pos.direction == "yes" and sig.edge_bps < -threshold_bps
                 flip_no = pos.direction == "no" and sig.edge_bps > threshold_bps
                 if flip_yes or flip_no:
-                    if "quote_unusable=true" in (sig.decision_reason or ""):
+                    _reason = sig.decision_reason or ""
+                    try:
+                        _unusable = json.loads(_reason).get("quote_unusable", False)
+                    except (json.JSONDecodeError, AttributeError):
+                        _unusable = "quote_unusable=true" in _reason
+                    if _unusable:
                         continue
                     qa = _quote_assessment(snap_by_contract.get(key), sig, settings)
                     if qa is None:

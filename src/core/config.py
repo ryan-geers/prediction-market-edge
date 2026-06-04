@@ -41,7 +41,9 @@ class Settings(BaseSettings):
     # When this many positions are already open, new entries are skipped (highest-edge
     # candidates are admitted first because signals are sorted by |edge_bps| before dedup).
     # 0 = unlimited (original behaviour).
-    paper_max_total_open: int = 10
+    # NOTE: set generously (200+) for paper-trading across many CPI/UNRATE strikes;
+    # the per-key guard (paper_max_open_per_key=1) handles contract-level dedup.
+    paper_max_total_open: int = 200
 
     #: Max open positions sharing the same Kalshi-style series prefix
     #: (text before the first "-", e.g. KXCPI, KXU3, CPI). Reduces one-factor CPI
@@ -56,6 +58,12 @@ class Settings(BaseSettings):
     market_min_bid_for_quote: float = 0.01
     market_min_ask_for_quote: float = 0.01
     market_max_spread_bps: float = 1500.0
+    #: Hard ceiling above which no last_trade rescue applies — contracts with spread
+    #: wider than this are completely illiquid and cannot be executed at any price.
+    #: Default 10,000 bps (100% of mid). KXU3/KXECONSTATU3 contracts with empty
+    #: books often show spread=20,000 bps, which the last_trade path would
+    #: incorrectly treat as signal-quality.
+    market_max_spread_bps_hard: float = 10_000.0
     #: When bid is missing, treat ask above this as a broken empty book (no mid).
     market_max_one_sided_ask: float = 0.85
 

@@ -80,7 +80,8 @@ CREATE TABLE IF NOT EXISTS paper_positions (
   mark_price DOUBLE,
   last_mark_time_utc TIMESTAMP,
   status VARCHAR,
-  close_reason VARCHAR
+  close_reason VARCHAR,
+  direction VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS market_snapshots (
@@ -125,11 +126,12 @@ CREATE TABLE IF NOT EXISTS model_forecasts (
 """
 
 SCHEMA_MIGRATIONS = [
+    # Backward-compat migrations for databases created before these columns were
+    # added to the base DDL above. IF NOT EXISTS makes them safe to re-run.
     "ALTER TABLE paper_orders ADD COLUMN IF NOT EXISTS assumption_version VARCHAR",
     "ALTER TABLE paper_orders ADD COLUMN IF NOT EXISTS slippage_model_name VARCHAR",
     "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS run_id VARCHAR",
     "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS signal_id VARCHAR",
-    # Phase 2: direction is required for exit-flip logic; Phase 3 uses it for dedup.
     "ALTER TABLE paper_positions ADD COLUMN IF NOT EXISTS direction VARCHAR",
 ]
 
@@ -399,12 +401,17 @@ class Storage:
                 yes_bid = float(mark.yes_bid)
                 yes_ask = float(mark.yes_ask)
                 broken_no_book = yes_bid <= 0 and yes_ask >= 0.999
+                # fair_mid is used as YES fallback when bid is 0 (e.g. near-certain contracts
+                # whose YES side is so likely that nobody posts a bid, but last_trade is still
+                # meaningful). Without this, these positions are never re-marked.
+                fair_mid = float(mark.mark_price) if mark.mark_price is not None else None
                 rows = self.con.execute(
                     """
                     UPDATE paper_positions
                     SET
                       mark_price = CASE
                         WHEN direction = 'yes' AND ? >= ? THEN ?
+                        WHEN direction = 'yes' AND ? IS NOT NULL THEN ?
                         WHEN direction = 'no' AND NOT ? THEN ?
                         WHEN direction IS NULL AND ? IS NOT NULL THEN ?
                         ELSE mark_price
@@ -413,6 +420,8 @@ class Storage:
                         WHEN direction = 'no' AND NOT ? THEN
                           ((1.0 - ?) - avg_entry_price) * net_qty
                         WHEN direction = 'yes' AND ? >= ? THEN
+                          (? - avg_entry_price) * net_qty
+                        WHEN direction = 'yes' AND ? IS NOT NULL THEN
                           (? - avg_entry_price) * net_qty
                         WHEN direction IS NULL AND ? IS NOT NULL THEN
                           (? - avg_entry_price) * net_qty
@@ -424,33 +433,32 @@ class Storage:
                       AND venue = ?
                       AND (
                         (direction = 'yes' AND ? >= ?)
+                        OR (direction = 'yes' AND ? IS NOT NULL)
                         OR (direction = 'no' AND NOT ?)
                         OR (direction IS NULL AND ? IS NOT NULL)
                       )
                     RETURNING position_id
                     """,
                     [
-                        yes_bid,
-                        min_bid,
-                        yes_bid,
-                        broken_no_book,
-                        yes_ask,
-                        mark.mark_price,
-                        mark.mark_price,
-                        broken_no_book,
-                        yes_ask,
-                        yes_bid,
-                        min_bid,
-                        yes_bid,
-                        mark.mark_price,
-                        mark.mark_price,
+                        # SET mark_price
+                        yes_bid, min_bid, yes_bid,   # YES bid branch
+                        fair_mid, fair_mid,           # YES fair-mid fallback
+                        broken_no_book, yes_ask,      # NO branch
+                        fair_mid, fair_mid,           # NULL direction
+                        # SET unrealized_pnl
+                        broken_no_book, yes_ask,      # NO branch
+                        yes_bid, min_bid, yes_bid,    # YES bid branch
+                        fair_mid, fair_mid,           # YES fair-mid fallback
+                        fair_mid, fair_mid,           # NULL direction
+                        # timestamp / contract filter
                         mark.last_mark_time_utc,
                         mark.contract_id,
                         mark.venue,
-                        yes_bid,
-                        min_bid,
-                        broken_no_book,
-                        mark.mark_price,
+                        # WHERE clause
+                        yes_bid, min_bid,             # YES bid
+                        fair_mid,                     # YES fair-mid fallback
+                        broken_no_book,               # NO
+                        fair_mid,                     # NULL direction
                     ],
                 ).fetchall()
             else:
@@ -516,6 +524,23 @@ class Storage:
 
         summaries: list[dict] = []
         now = datetime.now(timezone.utc)
+
+        # Sweep: close any open positions with net_qty <= 0 that escaped earlier runs.
+        # These are ledger artefacts (e.g. from a failed consolidation) and must not be
+        # treated as live book entries by the dedup / exit logic.
+        self.con.execute(
+            """
+            UPDATE paper_positions
+            SET status         = 'closed',
+                closed_at_utc  = ?,
+                realized_pnl   = 0.0,
+                unrealized_pnl = 0.0,
+                close_reason   = 'zero_qty_cleanup'
+            WHERE status  = 'open'
+              AND net_qty <= 0
+            """,
+            [now],
+        )
 
         for contract_id, venue, direction, cnt in groups:
             if direction is None:

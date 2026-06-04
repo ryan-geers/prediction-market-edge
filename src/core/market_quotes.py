@@ -60,6 +60,7 @@ def assess_yes_quote(
     min_bid = float(settings.market_min_bid_for_quote)
     min_ask = float(settings.market_min_ask_for_quote)
     max_spread = float(settings.market_max_spread_bps)
+    max_spread_hard = float(settings.market_max_spread_bps_hard)
     max_one_sided_ask = float(settings.market_max_one_sided_ask)
 
     sp = spread_bps(bid, ask) if ask > bid else float("inf")
@@ -134,7 +135,22 @@ def assess_yes_quote(
         )
 
     # Two prices present but spread too wide — fall back to last trade if sane.
+    # Hard cap: above max_spread_hard (default 10,000 bps) the market is so illiquid
+    # that no last_trade rescue applies; any position opened here cannot be closed at
+    # a reasonable price. Contracts like KXU3 with bid≈0, ask≈1 fall into this bucket.
     if bid >= min_bid and ask > bid and sp > max_spread:
+        if sp >= max_spread_hard:
+            return YesQuoteAssessment(
+                best_bid=bid,
+                best_ask=ask,
+                fair_yes_mid=None,
+                spread_bps=sp,
+                quality="unusable_extreme_spread",
+                is_signal_quality=False,
+                is_exit_quality=False,
+                yes_bid_for_exit=bid if bid >= min_bid else 0.0,
+                yes_ask_for_exit=ask,
+            )
         lt_mid = _last_trade_mid()
         if lt_mid is not None:
             exit_ok = bid >= min_bid

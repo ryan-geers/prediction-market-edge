@@ -214,10 +214,15 @@ class KalshiConnector(Connector):
 
         `authenticated=True` adds RSA headers (only needed for portfolio/trading
         endpoints, NOT for reading market prices).
+
+        Wall-clock latency is measured around the HTTP round-trip and stamped on
+        every returned market dict as ``source_latency_ms`` so it flows through
+        to ``market_snapshots.source_latency_ms`` for API health monitoring.
         """
         series_ticker = params.get("series_ticker", "")
         path = "/trade-api/v2/markets"
         headers = self._auth_headers(method="GET", path=path) if authenticated else {}
+        t0 = time.monotonic()
         try:
             response = self.http_client.session.get(
                 f"{self.BASE_URL}/markets",
@@ -225,6 +230,7 @@ class KalshiConnector(Connector):
                 headers=headers,
                 timeout=self.http_client.timeout_seconds,
             )
+            latency_ms = int((time.monotonic() - t0) * 1000)
             if response.status_code != 200:
                 LOGGER.warning(
                     "Kalshi GET /markets returned HTTP %d (params=%s). Response: %.300s",
@@ -233,7 +239,10 @@ class KalshiConnector(Connector):
                     response.text,
                 )
                 return []
-            return self.parse_markets(response.json(), series_ticker=series_ticker)
+            markets = self.parse_markets(response.json(), series_ticker=series_ticker)
+            for m in markets:
+                m["source_latency_ms"] = latency_ms
+            return markets
         except Exception as exc:
             LOGGER.warning("Kalshi GET /markets failed (params=%s): %s", params, exc)
             return []
