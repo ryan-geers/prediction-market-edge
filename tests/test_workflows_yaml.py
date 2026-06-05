@@ -30,11 +30,12 @@ def test_db_audit_step_captures_critical_exit_under_errexit(tmp_path: Path) -> N
     script = audit_step["run"]
 
     audit_command = """python scripts/audit_db.py \\
-            --db data/pme.duckdb \\
-            --out data/reports/audit_latest.md \\
-            --json data/reports/audit_latest.json \\
-            --github-summary"""
+  --db data/pme.duckdb \\
+  --out data/reports/audit_latest.md \\
+  --json data/reports/audit_latest.json \\
+  --github-summary"""
     script = script.replace(audit_command, "python3 -c 'import sys; sys.exit(2)'")
+    assert "scripts/audit_db.py" not in script
 
     github_output = tmp_path / "github_output"
     result = subprocess.run(
