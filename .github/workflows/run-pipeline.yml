@@ -125,15 +125,21 @@ jobs:
         id: audit
         run: |
           mkdir -p data/reports
+          # Capture the audit result explicitly: GitHub Actions shells use
+          # errexit, so WARNING/CRITICAL exit codes would otherwise skip the
+          # output write below and make annotation think the audit passed.
+          set +e
           python scripts/audit_db.py \
             --db data/pme.duckdb \
             --out data/reports/audit_latest.md \
             --json data/reports/audit_latest.json \
             --github-summary
+          audit_code=$?
+          set -e
           # Capture exit code but never let it fail the job — audit is
           # advisory only. Critical findings surface as a workflow warning
           # annotation in the step below.
-          echo "audit_exit=$?" >> "$GITHUB_OUTPUT"
+          echo "audit_exit=$audit_code" >> "$GITHUB_OUTPUT"
         continue-on-error: true
 
       - name: Annotate findings

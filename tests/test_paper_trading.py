@@ -330,6 +330,26 @@ def test_apply_dedup_same_contract_same_direction_merges():
     assert abs(op.new_avg_entry_price - expected_avg) < 1e-9
 
 
+def test_apply_dedup_merges_existing_even_when_per_key_count_is_at_cap():
+    """A VWAP add-to should not be blocked by max_open_per_key because it creates no new row."""
+    settings = Settings(paper_allow_add_to_position=True, paper_max_open_per_key=1)
+    existing = _make_position(position_id="existing", avg_entry_price=0.50, net_qty=50.0)
+    candidate = _make_position(position_id="new-fill", avg_entry_price=0.60, net_qty=40.0)
+    key = ("CPI-TEST", "KALSHI", "yes")
+
+    new_positions, add_tos, acted = apply_dedup(
+        [candidate],
+        {key: existing},
+        settings,
+        open_counts_by_key={key: 1},
+    )
+
+    assert new_positions == []
+    assert len(add_tos) == 1
+    assert add_tos[0].position_id == "existing"
+    assert candidate.signal_id in acted
+
+
 def test_apply_dedup_different_direction_creates_new_row():
     """A NO candidate on a contract already held as YES is a separate new insert."""
     settings = Settings(paper_allow_add_to_position=True)

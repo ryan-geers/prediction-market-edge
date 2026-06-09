@@ -401,9 +401,6 @@ class Storage:
                 yes_bid = float(mark.yes_bid)
                 yes_ask = float(mark.yes_ask)
                 broken_no_book = yes_bid <= 0 and yes_ask >= 0.999
-                # fair_mid is used as YES fallback when bid is 0 (e.g. near-certain contracts
-                # whose YES side is so likely that nobody posts a bid, but last_trade is still
-                # meaningful). Without this, these positions are never re-marked.
                 fair_mid = float(mark.mark_price) if mark.mark_price is not None else None
                 rows = self.con.execute(
                     """
@@ -411,7 +408,6 @@ class Storage:
                     SET
                       mark_price = CASE
                         WHEN direction = 'yes' AND ? >= ? THEN ?
-                        WHEN direction = 'yes' AND ? IS NOT NULL THEN ?
                         WHEN direction = 'no' AND NOT ? THEN ?
                         WHEN direction IS NULL AND ? IS NOT NULL THEN ?
                         ELSE mark_price
@@ -420,8 +416,6 @@ class Storage:
                         WHEN direction = 'no' AND NOT ? THEN
                           ((1.0 - ?) - avg_entry_price) * net_qty
                         WHEN direction = 'yes' AND ? >= ? THEN
-                          (? - avg_entry_price) * net_qty
-                        WHEN direction = 'yes' AND ? IS NOT NULL THEN
                           (? - avg_entry_price) * net_qty
                         WHEN direction IS NULL AND ? IS NOT NULL THEN
                           (? - avg_entry_price) * net_qty
@@ -433,7 +427,6 @@ class Storage:
                       AND venue = ?
                       AND (
                         (direction = 'yes' AND ? >= ?)
-                        OR (direction = 'yes' AND ? IS NOT NULL)
                         OR (direction = 'no' AND NOT ?)
                         OR (direction IS NULL AND ? IS NOT NULL)
                       )
@@ -442,13 +435,11 @@ class Storage:
                     [
                         # SET mark_price
                         yes_bid, min_bid, yes_bid,   # YES bid branch
-                        fair_mid, fair_mid,           # YES fair-mid fallback
                         broken_no_book, yes_ask,      # NO branch
                         fair_mid, fair_mid,           # NULL direction
                         # SET unrealized_pnl
                         broken_no_book, yes_ask,      # NO branch
                         yes_bid, min_bid, yes_bid,    # YES bid branch
-                        fair_mid, fair_mid,           # YES fair-mid fallback
                         fair_mid, fair_mid,           # NULL direction
                         # timestamp / contract filter
                         mark.last_mark_time_utc,
@@ -456,7 +447,6 @@ class Storage:
                         mark.venue,
                         # WHERE clause
                         yes_bid, min_bid,             # YES bid
-                        fair_mid,                     # YES fair-mid fallback
                         broken_no_book,               # NO
                         fair_mid,                     # NULL direction
                     ],
