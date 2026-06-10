@@ -56,6 +56,37 @@ def test_mark_updates_mark_price_and_unrealized_pnl(tmp_path: Path) -> None:
     assert abs(row[1] - 5.0) < 1e-9
 
 
+def test_unreliable_bid_ask_mark_does_not_fallback_to_snapshot_mid(tmp_path: Path) -> None:
+    """Broken books must not overwrite marks via the snapshot mid fallback."""
+    st = Storage(tmp_path / "t.duckdb")
+    pos = _open_position(avg_entry_price=0.10, net_qty=100.0)
+    pos = pos.model_copy(update={"direction": "yes", "mark_price": 0.10, "unrealized_pnl": 0.0})
+    st.insert_positions([pos])
+
+    mark = PositionMark(
+        contract_id="CPI-TEST",
+        venue="KALSHI",
+        mark_price=0.50,
+        yes_bid=0.0,
+        yes_ask=1.0,
+        quote_reliable=False,
+    )
+    updated = st.mark_open_positions([mark])
+    st.close()
+
+    assert updated == 0
+    con = duckdb.connect(str(tmp_path / "t.duckdb"))
+    row = con.execute(
+        "SELECT mark_price, unrealized_pnl FROM paper_positions WHERE position_id = ?",
+        [pos.position_id],
+    ).fetchone()
+    con.close()
+
+    assert row is not None
+    assert abs(row[0] - 0.10) < 1e-9
+    assert abs(row[1]) < 1e-9
+
+
 def test_mark_does_not_update_closed_positions(tmp_path: Path) -> None:
     """Closed positions must not be re-marked."""
     st = Storage(tmp_path / "t.duckdb")
