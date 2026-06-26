@@ -67,10 +67,10 @@ def run_pipeline(thesis_name: str = "economic_indicators") -> tuple[str, Path | 
             PositionMark(
                 contract_id=snap.contract_id,
                 venue=snap.venue,
-                mark_price=qa.fair_yes_mid if qa.fair_yes_mid is not None else snap.mid_price,
+                mark_price=qa.fair_yes_mid,
                 yes_bid=qa.best_bid,
                 yes_ask=qa.best_ask,
-                quote_reliable=qa.is_exit_quality or qa.fair_yes_mid is not None,
+                quote_reliable=qa.is_exit_quality,
             )
         )
     marked = storage.mark_open_positions(marks)
