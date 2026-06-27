@@ -90,6 +90,24 @@ def test_simulate_paper_trades_sets_direction():
     assert positions[1].direction == "no"
 
 
+def test_simulate_paper_trades_skips_long_no_without_executable_yes_bid():
+    s = _base_signal().model_copy(
+        update={
+            "decision": "enter_long_no",
+            "edge_bps": -1200.0,
+            "bid_price": 0.0,
+            "ask_price": 0.10,
+            "market_implied_probability": 0.10,
+        }
+    )
+    settings = Settings()
+
+    orders, positions = simulate_paper_trades([s], settings)
+
+    assert orders == []
+    assert positions == []
+
+
 def test_paper_trading_skips_hold():
     s = _base_signal()
     s = s.model_copy(update={"decision": "hold"})

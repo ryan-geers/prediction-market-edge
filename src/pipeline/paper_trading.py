@@ -361,7 +361,9 @@ def simulate_paper_trades(
         if side == "yes":
             raw_fill = _apply_slippage_to_yes_ask(signal.ask_price, slippage)
         else:
-            raw_fill = _apply_slippage_to_no_ask(signal.bid_price, slippage)
+            if qa.yes_bid_for_exit <= 0:
+                continue
+            raw_fill = _apply_slippage_to_no_ask(qa.yes_bid_for_exit, slippage)
 
         qty = _position_qty(raw_fill, settings)
 
