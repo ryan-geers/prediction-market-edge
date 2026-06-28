@@ -170,7 +170,7 @@ class KalshiConnector(Connector):
         bid = _normalize_price(bid_raw)
         ask = _normalize_price(ask_raw)
         last_raw = _first_price_value(item, "last_price_dollars", "last_price")
-        last = _normalize_price(last_raw) if last_raw is not None else (bid + ask) / 2
+        last = _normalize_price(last_raw) if last_raw is not None else None
         ticker = item.get("ticker", "CPI-MAY-OVER-0.3")
 
         resolved_series = series_ticker or item.get("series_ticker", "") or ""

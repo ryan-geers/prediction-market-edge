@@ -52,6 +52,7 @@ def test_kalshi_normalization_cpi():
     assert row["contract_type"] == "cpi"
     # _parse_threshold now extracts the threshold from the OVER-{value} format.
     assert row["threshold"] == pytest.approx(0.3)
+    assert row["last_trade"] is None
 
 
 def test_kalshi_normalization_preserves_zero_dollar_prices():
