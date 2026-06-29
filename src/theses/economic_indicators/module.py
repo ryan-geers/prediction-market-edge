@@ -113,6 +113,12 @@ class EconomicIndicatorsThesis(ThesisModule):
         _CPI_PRED_MIN, _CPI_PRED_MAX = -0.5, 2.5
         prediction_in_range = _CPI_PRED_MIN <= cpi_reg.prediction <= _CPI_PRED_MAX
         cpi_healthy = cpi_val_rmse >= 1e-6 and abs(cpi_reg.prediction) > 1e-6 and prediction_in_range
+        # Forecast-record health: additionally require that the global reference
+        # probability (against the 0.3% threshold) is not stuck at the min/max clamp.
+        # When the OLS extrapolates to an extreme prediction the probability hits exactly
+        # 0.01 or 0.99, producing zero stddev in model_forecasts and triggering the
+        # model_degeneracy audit check even when the per-contract signals are correct.
+        cpi_forecast_healthy = cpi_healthy and abs(cpi_model_probability - 0.01) > 1e-9 and abs(cpi_model_probability - 0.99) > 1e-9
         if not cpi_healthy:
             LOGGER.warning(
                 "CPI model health check failed — blocking CPI signals. "
@@ -140,6 +146,13 @@ class EconomicIndicatorsThesis(ThesisModule):
             un_reg = None
             un_healthy = False
 
+        # Use the same RMSE-adjusted scale for the stored global probability as
+        # generate_signals uses per-contract so model_forecasts reflects the actual
+        # signal calibration (scale=30 with rmse=0.89 overstates confidence to ~0.97).
+        _un_forecast_scale = (
+            min(30.0, 3.0 / un_reg.rmse) if un_reg and un_reg.rmse >= 1e-6 else 5.0
+        )
+
         return {
             # CPI sub-forecast
             "model_probability": cpi_model_probability,
@@ -158,10 +171,12 @@ class EconomicIndicatorsThesis(ThesisModule):
             "training_end": cpi_reg.training_end,
             "backtest": cpi_reg.backtest,
             "model_healthy": cpi_healthy,
+            "cpi_forecast_healthy": cpi_forecast_healthy,
             # Unemployment sub-forecast
             "un_model_probability": unrate_to_yes_probability(
                 un_reg.prediction if un_reg else self.settings.unemployment_threshold_pct,
                 threshold=self.settings.unemployment_threshold_pct,
+                scale=_un_forecast_scale,
             ) if un_healthy else None,
             "un_reg": un_reg,
             "un_healthy": un_healthy,
@@ -193,10 +208,22 @@ class EconomicIndicatorsThesis(ThesisModule):
             contract_type = contract.get("contract_type", "unknown")
 
             if contract_type in _CPI_CONTRACT_TYPES:
-                model_probability = forecast["model_probability"]
+                # Use the contract's own threshold (parsed from the ticker by the
+                # connector) so that a contract like KXCPI-26JUL-T-0.3 (threshold=-0.3%)
+                # gets P(CPI > -0.3%) ≈ 0.62 instead of P(CPI > 0.3%) ≈ 0.01.
+                # Fall back to the global reference threshold when unavailable.
+                cpi_contract_threshold = float(
+                    contract.get("threshold") if contract.get("threshold") is not None
+                    else forecast.get("cpi_mom_threshold_pct", 0.3)
+                )
+                pred_cpi = float(forecast.get("predicted_cpi_mom_pct", 0.0))
+                model_probability = mom_percent_to_yes_probability(
+                    pred_cpi, threshold_pct=cpi_contract_threshold, scale=12.0
+                )
                 is_healthy = cpi_healthy
                 reason_extras: dict = {
-                    "pred_cpi_mom_pct": round(float(forecast.get("predicted_cpi_mom_pct", 0)), 4),
+                    "pred_cpi_mom_pct": round(pred_cpi, 4),
+                    "contract_threshold_pct": round(cpi_contract_threshold, 4),
                     "val_rmse": round(forecast["validation_rmse"], 4),
                     "wf_val_rmse": round(float(forecast.get("walk_forward_val_rmse", 0)), 4),
                     "history_rows": forecast["macro_history_count"],
@@ -318,8 +345,13 @@ class EconomicIndicatorsThesis(ThesisModule):
         return signals, snapshots
 
     def build_forecast_records(self, run_id: str, forecast: dict[str, float]) -> list[ModelForecastRecord]:
-        records = [
-            ModelForecastRecord(
+        records: list[ModelForecastRecord] = []
+        # Only persist the CPI record when the global reference probability is
+        # non-degenerate (not stuck at the 0.01 or 0.99 clamp). When the OLS
+        # extrapolates to an extreme prediction the clamp causes every run in a
+        # calendar month to emit the identical probability → stddev=0 → audit flag.
+        if forecast.get("cpi_forecast_healthy", True):
+            records.append(ModelForecastRecord(
                 run_id=run_id,
                 thesis_module=self.name,
                 release_date_utc=forecast["release_date"],
@@ -331,8 +363,7 @@ class EconomicIndicatorsThesis(ThesisModule):
                 training_end_utc=forecast["training_end"],
                 validation_rmse=forecast["validation_rmse"],
                 validation_mae=forecast["validation_mae"],
-            )
-        ]
+            ))
         un_reg = forecast.get("un_reg")
         if un_reg is not None and forecast.get("un_healthy"):
             records.append(

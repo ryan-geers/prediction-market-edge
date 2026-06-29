@@ -632,5 +632,84 @@ class Storage:
 
         return summaries
 
+    def get_stale_open_positions(self, max_stale_hours: float) -> list[PaperPositionRecord]:
+        """
+        Return open positions whose last_mark_time_utc is older than
+        ``max_stale_hours`` — the same set that :meth:`close_stale_positions`
+        would sweep.  Use this to inspect / settle them before closing.
+        """
+        if max_stale_hours <= 0:
+            return []
+        now = datetime.now(timezone.utc)
+        rows = self.con.execute(
+            """
+            SELECT position_id, run_id, signal_id, venue, contract_id,
+                   opened_at_utc, closed_at_utc, net_qty, avg_entry_price,
+                   avg_exit_price, realized_pnl, unrealized_pnl, mark_price,
+                   last_mark_time_utc, status, close_reason, direction
+            FROM paper_positions
+            WHERE status = 'open'
+              AND last_mark_time_utc IS NOT NULL
+              AND EXTRACT(EPOCH FROM (? - last_mark_time_utc)) / 3600 > ?
+            ORDER BY last_mark_time_utc ASC
+            """,
+            [now, max_stale_hours],
+        ).fetchall()
+        return [
+            PaperPositionRecord(
+                position_id=r[0],
+                run_id=r[1] or "",
+                signal_id=r[2] or "",
+                venue=r[3],
+                contract_id=r[4],
+                opened_at_utc=r[5],
+                closed_at_utc=r[6],
+                net_qty=r[7],
+                avg_entry_price=r[8],
+                avg_exit_price=r[9],
+                realized_pnl=r[10] or 0.0,
+                unrealized_pnl=r[11] or 0.0,
+                mark_price=r[12],
+                last_mark_time_utc=r[13],
+                status=r[14],
+                close_reason=r[15],
+                direction=r[16],
+            )
+            for r in rows
+        ]
+
+    def close_stale_positions(self, max_stale_hours: float) -> int:
+        """
+        Auto-close open positions whose last_mark_time_utc is older than
+        ``max_stale_hours``.
+
+        Contracts that expire or de-list stop appearing in live market snapshots
+        so ``mark_open_positions()`` never re-marks them.  Without this sweep,
+        those positions accumulate indefinitely, consume per-family quota, and
+        report stale unrealized PnL.
+
+        The realized_pnl is set to the last known unrealized_pnl (i.e. position
+        is closed at the last mark price).  Returns the number of rows closed.
+        """
+        if max_stale_hours <= 0:
+            return 0
+        now = datetime.now(timezone.utc)
+        rows = self.con.execute(
+            """
+            UPDATE paper_positions
+            SET status         = 'closed',
+                closed_at_utc  = ?,
+                realized_pnl   = COALESCE(unrealized_pnl, 0.0),
+                unrealized_pnl = 0.0,
+                close_reason   = 'stale_no_market'
+            WHERE status = 'open'
+              AND last_mark_time_utc IS NOT NULL
+              AND EXTRACT(EPOCH FROM (? - last_mark_time_utc)) / 3600 > ?
+            RETURNING position_id
+            """,
+            [now, now, max_stale_hours],
+        ).fetchall()
+        return len(rows)
+
     def close(self) -> None:
         self.con.close()

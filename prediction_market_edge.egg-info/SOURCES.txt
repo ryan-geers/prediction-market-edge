@@ -20,6 +20,7 @@ src/core/__init__.py
 src/core/config.py
 src/core/http_client.py
 src/core/logging.py
+src/core/market_quotes.py
 src/core/schemas.py
 src/core/storage.py
 src/dashboard/__init__.py
@@ -53,10 +54,13 @@ tests/test_contracts.py
 tests/test_econ_indicators_fixture_pipeline.py
 tests/test_econ_model.py
 tests/test_http_client.py
+tests/test_market_quotes.py
 tests/test_paper_trading.py
+tests/test_paper_trading_quotes.py
 tests/test_parquet_archive.py
 tests/test_pipeline_smoke.py
 tests/test_report_prune.py
+tests/test_reporting_narrative.py
 tests/test_state_check.py
 tests/test_storage.py
 tests/test_storage_integrity.py

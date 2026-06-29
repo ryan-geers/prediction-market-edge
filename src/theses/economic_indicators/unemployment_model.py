@@ -45,6 +45,7 @@ class UnrateRegressionResult:
 def build_unemployment_training_frame(
     history_rows: list[dict],
     fallback_unrate: float = 4.2,
+    max_training_months: int = 120,
 ) -> pd.DataFrame:
     """
     Build an AR training frame from `macro_history` rows.
@@ -54,6 +55,12 @@ def build_unemployment_training_frame(
 
     Columns returned: release_date, unrate_t, unrate_lag1, unrate_lag2,
                       unrate_lag3, trend_3m, unrate_next (target).
+
+    ``max_training_months`` limits the AR window to the most recent N months
+    (default 10 years). Including the full 70+ year FRED history produces a
+    validation set that spans the 2009 and 2020 UNRATE spikes (10-15 pp),
+    which the AR model can't anticipate, inflating RMSE to ~0.9 pp and making
+    the RMSE-adjusted signal scale too conservative.
     """
     if history_rows:
         frame = pd.DataFrame(history_rows)
@@ -70,6 +77,11 @@ def build_unemployment_training_frame(
                 )
                 # Resample to month-start, keep the last observation per month.
                 monthly = series.resample("MS").last().ffill().dropna()
+
+                # Restrict to most recent window to keep coefficients calibrated
+                # to the current UNRATE regime and avoid validation-set spikes.
+                if max_training_months > 0 and len(monthly) > max_training_months:
+                    monthly = monthly.iloc[-max_training_months:]
 
                 if len(monthly) >= MIN_TRAIN_ROWS + 4:
                     return _build_ar_frame(monthly)

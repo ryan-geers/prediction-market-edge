@@ -7,12 +7,13 @@ from src.core.market_quotes import (
 )
 
 
-def _settings() -> Settings:
+def _settings(market_max_spread_bps_hard: float = 5_000.0) -> Settings:
     return Settings(
         market_min_bid_for_quote=0.01,
         market_min_ask_for_quote=0.01,
         market_max_spread_bps=1500.0,
         market_max_one_sided_ask=0.85,
+        market_max_spread_bps_hard=market_max_spread_bps_hard,
     )
 
 
@@ -34,8 +35,20 @@ def test_empty_book_bid_zero_ask_one_is_unusable():
     assert executable_yes_exit_price(qa, "yes") is None
 
 
-def test_one_sided_low_ask_allows_signal_but_not_exit():
+def test_one_sided_low_ask_blocked_by_hard_cap():
+    """Default hard-cap (5,000 bps) blocks one-sided books whose effective
+    spread is 20,000 bps — no exit liquidity, so entering would trap capital."""
     qa = assess_yes_quote(0.0, 0.10, None, _settings())
+    assert qa.quality == "unusable_one_sided_hard_cap"
+    assert not qa.is_signal_quality
+    assert not qa.is_exit_quality
+    assert executable_yes_exit_price(qa, "yes") is None
+
+
+def test_one_sided_low_ask_allows_signal_when_hard_cap_relaxed():
+    """When market_max_spread_bps_hard is raised above 20,000 bps, one-sided
+    books with a plausible ask are still allowed as signals (ask proxy)."""
+    qa = assess_yes_quote(0.0, 0.10, None, _settings(market_max_spread_bps_hard=25_000.0))
     assert qa.quality == "one_sided_ask_proxy"
     assert qa.fair_yes_mid == 0.10
     assert qa.is_signal_quality
@@ -43,8 +56,18 @@ def test_one_sided_low_ask_allows_signal_but_not_exit():
     assert executable_yes_exit_price(qa, "yes") is None
 
 
-def test_last_trade_used_when_one_sided():
+def test_last_trade_blocked_when_one_sided_hard_cap():
+    """last_trade_one_sided quality is also blocked by the hard cap."""
     qa = assess_yes_quote(0.0, 0.10, 0.06, _settings())
+    assert qa.quality == "unusable_one_sided_hard_cap"
+    assert not qa.is_signal_quality
+    # fair_yes_mid is still populated from last_trade for marking existing positions.
+    assert qa.fair_yes_mid == 0.06
+
+
+def test_last_trade_one_sided_allowed_when_hard_cap_relaxed():
+    """last_trade_one_sided quality is preserved when the hard cap permits it."""
+    qa = assess_yes_quote(0.0, 0.10, 0.06, _settings(market_max_spread_bps_hard=25_000.0))
     assert qa.quality == "last_trade_one_sided"
     assert qa.fair_yes_mid == 0.06
     assert not qa.is_exit_quality

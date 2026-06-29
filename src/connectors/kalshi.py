@@ -345,6 +345,55 @@ class KalshiConnector(Connector):
             },
         ]
 
+    def fetch_market_result(self, ticker: str) -> str | None:
+        """
+        Return the settlement result for a specific Kalshi contract ticker.
+
+        Calls ``GET /trade-api/v2/markets/{ticker}`` — this endpoint returns
+        data for *any* market status (open, closed, or settled), unlike the
+        list endpoint which is filtered by the caller.
+
+        Returns:
+            "yes"  — the YES leg won (YES contract pays $1, NO pays $0)
+            "no"   — the NO leg won  (NO contract pays $1, YES pays $0)
+            "void" — contract voided; both sides refunded at $0.50
+            None   — market not yet settled, API unavailable, or unknown result
+
+        The result is intentionally lowercased for safe equality comparisons
+        downstream regardless of how Kalshi capitalises it in the response.
+        """
+        path = f"/trade-api/v2/markets/{ticker}"
+        headers = self._auth_headers(method="GET", path=path)
+        try:
+            response = self.http_client.session.get(
+                f"{self.BASE_URL}/markets/{ticker}",
+                headers=headers,
+                timeout=self.http_client.timeout_seconds,
+            )
+            if response.status_code == 404:
+                LOGGER.debug("Kalshi: market %s not found (404) — may not exist yet", ticker)
+                return None
+            if response.status_code != 200:
+                LOGGER.warning(
+                    "Kalshi GET /markets/%s returned HTTP %d: %.200s",
+                    ticker,
+                    response.status_code,
+                    response.text,
+                )
+                return None
+            data = response.json()
+            market = data.get("market") or data  # v2 wraps in {"market": {...}}
+            status = str(market.get("status", "")).lower()
+            if status not in {"settled", "closed"}:
+                return None
+            result = market.get("result") or market.get("resolution")
+            if result is None:
+                return None
+            return str(result).lower()
+        except Exception as exc:
+            LOGGER.warning("Kalshi fetch_market_result(%s) failed: %s", ticker, exc)
+            return None
+
     def fetch(self) -> list[dict[str, Any]]:
         """Legacy single-series fetch kept for backward compatibility."""
         return self.fetch_markets(["KXCPI", "KXU3"])

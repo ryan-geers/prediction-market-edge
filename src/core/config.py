@@ -48,7 +48,14 @@ class Settings(BaseSettings):
     #: Max open positions sharing the same Kalshi-style series prefix
     #: (text before the first "-", e.g. KXCPI, KXU3, CPI). Reduces one-factor CPI
     #: ladders from crowding the book. 0 = disabled.
-    paper_max_open_per_contract_family: int = 15
+    paper_max_open_per_contract_family: int = 75
+
+    #: Auto-close open positions whose last_mark_time_utc is older than this many
+    #: hours. Contracts that expire or de-list stop appearing in live snapshots so
+    #: mark_open_positions() never re-marks them; this setting sweeps them out of
+    #: the book so they no longer consume family quota or distort unrealized PnL.
+    #: 0 = disabled. Recommended: 168h (7 days) in production.
+    paper_stale_position_close_hours: float = 168.0
 
     #: Skip signal-flip / stop-loss exits when the current quote is not executable
     #: (e.g. bid=0 so a long YES cannot realistically be sold).
@@ -60,10 +67,10 @@ class Settings(BaseSettings):
     market_max_spread_bps: float = 1500.0
     #: Hard ceiling above which no last_trade rescue applies — contracts with spread
     #: wider than this are completely illiquid and cannot be executed at any price.
-    #: Default 10,000 bps (100% of mid). KXU3/KXECONSTATU3 contracts with empty
-    #: books often show spread=20,000 bps, which the last_trade path would
-    #: incorrectly treat as signal-quality.
-    market_max_spread_bps_hard: float = 10_000.0
+    #: Applies to both two-sided wide markets and one-sided (bid=0) books, where the
+    #: effective spread is always 20,000 bps. Set to 5,000 to match the audit
+    #: warning threshold and prevent entering positions with no exit liquidity.
+    market_max_spread_bps_hard: float = 5_000.0
     #: When bid is missing, treat ask above this as a broken empty book (no mid).
     market_max_one_sided_ask: float = 0.85
 

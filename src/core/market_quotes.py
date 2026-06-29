@@ -108,6 +108,24 @@ def assess_yes_quote(
 
     # One-sided with a plausible ask (bid missing but ask not pinned at $1).
     if bid < min_bid and min_ask < ask <= max_one_sided_ask:
+        # Effective spread with bid=0 is always 20,000 bps regardless of ask level.
+        # Apply the same hard cap used for two-sided wide markets: if the spread
+        # exceeds max_spread_hard the contract is too illiquid to enter (no exit
+        # liquidity — bid=0 means a long YES cannot be sold before settlement).
+        one_sided_sp = spread_bps(bid, ask)
+        if one_sided_sp >= max_spread_hard:
+            lt_mid = _last_trade_mid()
+            return YesQuoteAssessment(
+                best_bid=bid,
+                best_ask=ask,
+                fair_yes_mid=lt_mid,
+                spread_bps=one_sided_sp,
+                quality="unusable_one_sided_hard_cap",
+                is_signal_quality=False,
+                is_exit_quality=False,
+                yes_bid_for_exit=0.0,
+                yes_ask_for_exit=ask,
+            )
         lt_mid = _last_trade_mid()
         if lt_mid is not None:
             return YesQuoteAssessment(

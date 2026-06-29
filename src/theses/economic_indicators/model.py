@@ -62,8 +62,19 @@ def build_training_frame(macro: dict[str, float], periods: int = 36) -> pd.DataF
 
 
 def build_training_frame_from_history(
-    history_rows: list[dict], fallback_macro: dict[str, float | int]
+    history_rows: list[dict],
+    fallback_macro: dict[str, float | int],
+    max_training_months: int = 120,
 ) -> pd.DataFrame:
+    """Build a CPI OLS training frame from macro history rows.
+
+    ``max_training_months`` limits the training window to the most recent N
+    months (default 10 years). This prevents OLS on raw index levels from
+    extrapolating beyond the range of its training data: PPI / PCEPI have
+    risen ~5-10x since the 1950s, so including the full history causes
+    coefficients that are calibrated to historic scale to produce nonsensical
+    predictions (e.g. negative CPI) at current feature values.
+    """
     if not history_rows:
         return build_training_frame(fallback_macro)  # type: ignore[arg-type]
 
@@ -105,6 +116,11 @@ def build_training_frame_from_history(
     pivot = pivot.dropna(subset=feature_cols, how="any")
     if len(pivot) < 3:
         return build_training_frame(fallback_macro)  # type: ignore[arg-type]
+
+    # Restrict to the most recent max_training_months rows so OLS coefficients
+    # are calibrated to the same price-level scale as current feature values.
+    if max_training_months > 0 and len(pivot) > max_training_months:
+        pivot = pivot.iloc[-max_training_months:]
 
     if CPI_SERIES_FRED in pivot.columns and pivot[CPI_SERIES_FRED].notna().sum() >= 3:
         cpi = pivot[CPI_SERIES_FRED]
