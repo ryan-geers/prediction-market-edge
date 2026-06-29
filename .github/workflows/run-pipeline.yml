@@ -125,22 +125,28 @@ jobs:
         id: audit
         run: |
           mkdir -p data/reports
+          set +e
           python scripts/audit_db.py \
             --db data/pme.duckdb \
             --out data/reports/audit_latest.md \
             --json data/reports/audit_latest.json \
             --github-summary
+          audit_exit=$?
+          set -e
           # Capture exit code but never let it fail the job — audit is
           # advisory only. Critical findings surface as a workflow warning
           # annotation in the step below.
-          echo "audit_exit=$?" >> "$GITHUB_OUTPUT"
+          echo "audit_exit=$audit_exit" >> "$GITHUB_OUTPUT"
         continue-on-error: true
 
       - name: Annotate findings
         if: always()
         run: |
+          RUN_RESULT="${{ needs.run.result }}"
           EXIT="${{ steps.audit.outputs.audit_exit }}"
-          if [ "$EXIT" = "2" ]; then
+          if [ "$RUN_RESULT" != "success" ]; then
+            echo "::warning title=PME Audit — CRITICAL::Pipeline run job did not succeed, so the audit may not reflect the current database state. Check the Run Pipeline job before trusting restored cache data."
+          elif [ "$EXIT" = "2" ]; then
             echo "::warning title=PME Audit — CRITICAL::One or more CRITICAL findings detected. Download the pme-audit-report artifact or check the DB Audit step summary for details."
           elif [ "$EXIT" = "1" ]; then
             echo "::notice title=PME Audit — WARNING::One or more WARNING-level findings detected. See the DB Audit step summary."
