@@ -383,13 +383,18 @@ class KalshiConnector(Connector):
                 return None
             data = response.json()
             market = data.get("market") or data  # v2 wraps in {"market": {...}}
-            status = str(market.get("status", "")).lower()
-            if status not in {"settled", "closed"}:
+            status = str(market.get("status", "")).strip().lower()
+            # Kalshi REST uses "finalized" for markets whose settlement has
+            # paid out; "closed" only means trading ended and outcome is pending.
+            if status not in {"finalized", "settled"}:
                 return None
             result = market.get("result") or market.get("resolution")
             if result is None:
                 return None
-            return str(result).lower()
+            normalized = str(result).strip().lower()
+            if normalized not in {"yes", "no", "void"}:
+                return None
+            return normalized
         except Exception as exc:
             LOGGER.warning("Kalshi fetch_market_result(%s) failed: %s", ticker, exc)
             return None
