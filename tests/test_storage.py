@@ -3,6 +3,7 @@ Unit tests for Storage.mark_open_positions (Phase 1),
 Storage.close_positions / Storage.get_open_positions (Phase 2), and
 Storage.get_open_position / Storage.add_to_position (Phase 3).
 """
+from datetime import timedelta
 from pathlib import Path
 
 import duckdb
@@ -245,6 +246,71 @@ def test_mark_updates_last_mark_time(tmp_path: Path) -> None:
     ).fetchone()
     con.close()
     assert ts is not None and ts[0] is not None
+
+
+def test_unreliable_quote_does_not_use_mark_price_fallback(tmp_path: Path) -> None:
+    """Broken books must not re-mark long YES rows via snapshot mid/last_trade."""
+    st = Storage(tmp_path / "t.duckdb")
+    pos = _open_position(avg_entry_price=0.50, net_qty=10.0, venue="kalshi")
+    pos = pos.model_copy(update={"direction": "yes", "last_mark_time_utc": utc_now()})
+    st.insert_positions([pos])
+
+    mark = PositionMark(
+        contract_id="CPI-TEST",
+        venue="kalshi",
+        mark_price=0.0,
+        yes_bid=0.0,
+        yes_ask=1.0,
+        quote_reliable=False,
+    )
+    updated = st.mark_open_positions([mark])
+    st.close()
+
+    assert updated == 0
+    con = duckdb.connect(str(tmp_path / "t.duckdb"))
+    row = con.execute(
+        "SELECT mark_price, unrealized_pnl FROM paper_positions WHERE position_id = ?",
+        [pos.position_id],
+    ).fetchone()
+    con.close()
+
+    assert row is not None
+    assert row[0] == 0.50
+    assert row[1] == 0.0
+
+
+def test_close_stale_positions_can_exclude_kalshi(tmp_path: Path) -> None:
+    """Unresolved Kalshi contracts must remain open for later settlement."""
+    st = Storage(tmp_path / "t.duckdb")
+    stale_time = utc_now() - timedelta(hours=200)
+    kalshi_pos = _open_position(
+        position_id="kalshi-stale",
+        venue="kalshi",
+        avg_entry_price=0.40,
+        net_qty=10.0,
+    ).model_copy(update={"last_mark_time_utc": stale_time, "unrealized_pnl": 2.0})
+    poly_pos = _open_position(
+        position_id="poly-stale",
+        venue="polymarket",
+        avg_entry_price=0.40,
+        net_qty=10.0,
+    ).model_copy(update={"last_mark_time_utc": stale_time, "unrealized_pnl": 2.0})
+    st.insert_positions([kalshi_pos, poly_pos])
+
+    closed = st.close_stale_positions(168.0, exclude_venues={"kalshi"})
+    st.close()
+
+    assert closed == 1
+    con = duckdb.connect(str(tmp_path / "t.duckdb"))
+    rows = {
+        r[0]: r[1]
+        for r in con.execute(
+            "SELECT position_id, status FROM paper_positions ORDER BY position_id"
+        ).fetchall()
+    }
+    con.close()
+
+    assert rows == {"kalshi-stale": "open", "poly-stale": "closed"}
 
 
 # ── Phase 3: get_open_position / add_to_position ───────────────────────────────

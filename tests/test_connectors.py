@@ -16,6 +16,16 @@ def _load_json(name: str):
     return json.loads((FIXTURES_DIR / name).read_text())
 
 
+class _FakeResponse:
+    def __init__(self, status_code: int, payload: dict) -> None:
+        self.status_code = status_code
+        self._payload = payload
+        self.text = json.dumps(payload)
+
+    def json(self) -> dict:
+        return self._payload
+
+
 def test_fred_fallback_data():
     connector = FredConnector()
     connector._fetch_series = lambda _series: None  # type: ignore[method-assign]
@@ -72,6 +82,26 @@ def test_kalshi_normalization_preserves_zero_dollar_prices():
     assert row["best_bid"] == 0.0
     assert row["best_ask"] == pytest.approx(0.01)
     assert row["last_trade"] == 0.0
+
+
+def test_kalshi_fetch_market_result_accepts_finalized_status():
+    connector = KalshiConnector()
+    connector.http_client.session.get = lambda *args, **kwargs: _FakeResponse(  # type: ignore[method-assign]
+        200,
+        {"market": {"status": "finalized", "result": "YES"}},
+    )
+
+    assert connector.fetch_market_result("KXTEST-26JUN-T1") == "yes"
+
+
+def test_kalshi_fetch_market_result_rejects_closed_pending_status():
+    connector = KalshiConnector()
+    connector.http_client.session.get = lambda *args, **kwargs: _FakeResponse(  # type: ignore[method-assign]
+        200,
+        {"market": {"status": "closed", "result": "YES"}},
+    )
+
+    assert connector.fetch_market_result("KXTEST-26JUN-T1") is None
 
 
 def test_kalshi_parse_markets_skips_incomplete_quotes():
