@@ -16,6 +16,22 @@ def _load_json(name: str):
     return json.loads((FIXTURES_DIR / name).read_text())
 
 
+class _KalshiResponse:
+    def __init__(self, payload: dict, status_code: int = 200) -> None:
+        self._payload = payload
+        self.status_code = status_code
+        self.text = json.dumps(payload)
+
+    def json(self) -> dict:
+        return self._payload
+
+
+def _stub_kalshi_market_result(connector: KalshiConnector, payload: dict) -> None:
+    connector.http_client.session.get = (  # type: ignore[method-assign]
+        lambda *args, **kwargs: _KalshiResponse(payload)
+    )
+
+
 def test_fred_fallback_data():
     connector = FredConnector()
     connector._fetch_series = lambda _series: None  # type: ignore[method-assign]
@@ -97,6 +113,36 @@ def test_kalshi_fallback_stubs_have_both_types():
     types = {s["contract_type"] for s in stubs}
     assert "cpi" in types
     assert "unemployment" in types
+
+
+def test_kalshi_fetch_market_result_accepts_finalized_binary_result():
+    connector = KalshiConnector()
+    _stub_kalshi_market_result(
+        connector,
+        {"market": {"ticker": "KXCPI-TEST", "status": "finalized", "result": "YES"}},
+    )
+
+    assert connector.fetch_market_result("KXCPI-TEST") == "yes"
+
+
+def test_kalshi_fetch_market_result_rejects_pending_result_status():
+    connector = KalshiConnector()
+    _stub_kalshi_market_result(
+        connector,
+        {"market": {"ticker": "KXCPI-TEST", "status": "determined", "result": "yes"}},
+    )
+
+    assert connector.fetch_market_result("KXCPI-TEST") is None
+
+
+def test_kalshi_fetch_market_result_rejects_non_binary_result():
+    connector = KalshiConnector()
+    _stub_kalshi_market_result(
+        connector,
+        {"market": {"ticker": "KXCPI-TEST", "status": "finalized", "result": "scalar"}},
+    )
+
+    assert connector.fetch_market_result("KXCPI-TEST") is None
 
 
 def test_fred_parse_fixture():
