@@ -3,6 +3,7 @@ Unit tests for Storage.mark_open_positions (Phase 1),
 Storage.close_positions / Storage.get_open_positions (Phase 2), and
 Storage.get_open_position / Storage.add_to_position (Phase 3).
 """
+from datetime import timedelta
 from pathlib import Path
 
 import duckdb
@@ -245,6 +246,57 @@ def test_mark_updates_last_mark_time(tmp_path: Path) -> None:
     ).fetchone()
     con.close()
     assert ts is not None and ts[0] is not None
+
+
+def test_close_stale_positions_by_ids_only_closes_selected_rows(tmp_path: Path) -> None:
+    """Selected stale close must not sweep unresolved Kalshi rows."""
+    st = Storage(tmp_path / "t.duckdb")
+    old_mark = utc_now() - timedelta(hours=200)
+    kalshi_pos = _open_position(
+        position_id="pos-kalshi",
+        venue="kalshi",
+        avg_entry_price=0.60,
+        net_qty=10.0,
+    ).model_copy(
+        update={
+            "last_mark_time_utc": old_mark,
+            "unrealized_pnl": 2.0,
+            "direction": "yes",
+        }
+    )
+    poly_pos = _open_position(
+        position_id="pos-poly",
+        venue="polymarket",
+        avg_entry_price=0.40,
+        net_qty=10.0,
+    ).model_copy(
+        update={
+            "last_mark_time_utc": old_mark,
+            "unrealized_pnl": -1.5,
+            "direction": "yes",
+        }
+    )
+    st.insert_positions([kalshi_pos, poly_pos])
+
+    updated = st.close_stale_positions_by_ids(["pos-poly"])
+    st.close()
+
+    assert updated == 1
+    con = duckdb.connect(str(tmp_path / "t.duckdb"))
+    rows = {
+        r[0]: r[1:]
+        for r in con.execute(
+            """
+            SELECT position_id, status, realized_pnl, unrealized_pnl, close_reason
+            FROM paper_positions
+            ORDER BY position_id
+            """
+        ).fetchall()
+    }
+    con.close()
+
+    assert rows["pos-kalshi"] == ("open", 0.0, 2.0, None)
+    assert rows["pos-poly"] == ("closed", -1.5, 0.0, "stale_no_market")
 
 
 # ── Phase 3: get_open_position / add_to_position ───────────────────────────────

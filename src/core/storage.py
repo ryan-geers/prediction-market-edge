@@ -711,5 +711,36 @@ class Storage:
         ).fetchall()
         return len(rows)
 
+    def close_stale_positions_by_ids(self, position_ids: Iterable[str]) -> int:
+        """
+        Auto-close selected stale positions at their last known mark.
+
+        Callers pass ids that were already identified as safe to stale-close;
+        this avoids sweeping unresolved venues whose final settlement should
+        still be awaited.
+        """
+        unique_ids = list(dict.fromkeys(position_ids))
+        if not unique_ids:
+            return 0
+        now = datetime.now(timezone.utc)
+        updated = 0
+        for position_id in unique_ids:
+            rows = self.con.execute(
+                """
+                UPDATE paper_positions
+                SET status         = 'closed',
+                    closed_at_utc  = ?,
+                    realized_pnl   = COALESCE(unrealized_pnl, 0.0),
+                    unrealized_pnl = 0.0,
+                    close_reason   = 'stale_no_market'
+                WHERE status = 'open'
+                  AND position_id = ?
+                RETURNING position_id
+                """,
+                [now, position_id],
+            ).fetchall()
+            updated += len(rows)
+        return updated
+
     def close(self) -> None:
         self.con.close()
