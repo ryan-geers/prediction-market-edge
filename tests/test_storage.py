@@ -247,6 +247,42 @@ def test_mark_updates_last_mark_time(tmp_path: Path) -> None:
     assert ts is not None and ts[0] is not None
 
 
+def test_unreliable_directional_mark_does_not_use_fallback_mid(tmp_path: Path) -> None:
+    """Empty books may carry synthetic mids, but they must not overwrite marks."""
+    st = Storage(tmp_path / "t.duckdb")
+    pos = _open_position(avg_entry_price=0.20, net_qty=50.0)
+    pos = pos.model_copy(update={"direction": "yes", "mark_price": 0.20})
+    st.insert_positions([pos])
+
+    updated = st.mark_open_positions([
+        PositionMark(
+            contract_id="CPI-TEST",
+            venue="KALSHI",
+            mark_price=0.50,
+            yes_bid=0.0,
+            yes_ask=1.0,
+            quote_reliable=False,
+        )
+    ])
+    st.close()
+
+    assert updated == 0
+    con = duckdb.connect(str(tmp_path / "t.duckdb"))
+    row = con.execute(
+        """
+        SELECT mark_price, unrealized_pnl, last_mark_time_utc
+        FROM paper_positions WHERE position_id = ?
+        """,
+        [pos.position_id],
+    ).fetchone()
+    con.close()
+
+    assert row is not None
+    assert abs(row[0] - 0.20) < 1e-9
+    assert abs(row[1]) < 1e-9
+    assert row[2] is None
+
+
 # ── Phase 3: get_open_position / add_to_position ───────────────────────────────
 
 def test_get_open_position_returns_matching_row(tmp_path: Path) -> None:

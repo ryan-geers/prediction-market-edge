@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html as html_lib
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -338,7 +339,11 @@ def _weekly_payload(con: duckdb.DuckDBPyConnection, since: datetime) -> dict[str
         SELECT COUNT(DISTINCT contract_id)
         FROM signals
         WHERE event_time_utc >= ?
-          AND decision_reason LIKE '%data_source=kalshi_stub%'
+          AND (
+            decision_reason LIKE '%data_source=kalshi_stub%'
+            OR decision_reason LIKE '%"data_source":"kalshi_stub"%'
+            OR decision_reason LIKE '%"data_source": "kalshi_stub"%'
+          )
         """,
         [since],
     ).fetchone()
@@ -432,16 +437,16 @@ def _fmt_ts(ts: Any, fmt: str = "%b %d %H:%M UTC") -> str:
 
 
 def _parse_reason(reason: Any) -> str:
-    """Parse semicolon-delimited key=value reason string into readable text."""
+    """Parse persisted decision reasons into readable text."""
     if not reason:
         return ""
     s = str(reason).strip()
-    pairs = [p.strip() for p in s.split(";") if "=" in p]
+    pair_map = _reason_pairs(s)
+    pairs = list(pair_map.items())
     if not pairs:
         return s
     parts = []
-    for pair in pairs:
-        k, _, v = pair.partition("=")
+    for k, v in pairs:
         k = k.strip().replace("_", " ")
         v = v.strip()
         try:
@@ -487,9 +492,22 @@ def _weekly_closed_realized_sum(closed: list[tuple[Any, ...]]) -> float:
 
 
 def _reason_pairs(reason: Any) -> dict[str, str]:
-    """Parse semicolon-delimited key=value reason string into a plain dict."""
+    """Parse JSON or semicolon-delimited key=value reason strings into a dict."""
+    s = str(reason or "").strip()
+    if s.startswith("{"):
+        try:
+            parsed = json.loads(s)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            return {
+                str(k).strip(): str(v).strip()
+                for k, v in parsed.items()
+                if v is not None and str(k).strip()
+            }
+
     pairs: dict[str, str] = {}
-    for part in str(reason or "").split(";"):
+    for part in s.split(";"):
         if "=" in part:
             k, _, v = part.partition("=")
             pairs[k.strip()] = v.strip()
