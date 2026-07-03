@@ -3,6 +3,7 @@ Unit tests for Storage.mark_open_positions (Phase 1),
 Storage.close_positions / Storage.get_open_positions (Phase 2), and
 Storage.get_open_position / Storage.add_to_position (Phase 3).
 """
+from datetime import timedelta
 from pathlib import Path
 
 import duckdb
@@ -186,6 +187,39 @@ def test_close_positions_does_not_affect_other_rows(tmp_path: Path) -> None:
     ).fetchone()
     con.close()
     assert status_b is not None and status_b[0] == "open"
+
+
+def test_close_stale_positions_can_be_scoped(tmp_path: Path) -> None:
+    """Scoped stale cleanup leaves unlisted stale rows open."""
+    st = Storage(tmp_path / "t.duckdb")
+    old_mark = utc_now() - timedelta(hours=200)
+    pos_a = _open_position(position_id="pos-a", contract_id="CPI-A").model_copy(
+        update={"last_mark_time_utc": old_mark, "unrealized_pnl": 1.25}
+    )
+    pos_b = _open_position(position_id="pos-b", contract_id="CPI-B").model_copy(
+        update={"last_mark_time_utc": old_mark, "unrealized_pnl": -2.0}
+    )
+    st.insert_positions([pos_a, pos_b])
+
+    closed = st.close_stale_positions(168, position_ids=["pos-a"])
+    st.close()
+
+    con = duckdb.connect(str(tmp_path / "t.duckdb"))
+    rows = {
+        r[0]: (r[1], r[2], r[3])
+        for r in con.execute(
+            """
+            SELECT position_id, status, realized_pnl, close_reason
+            FROM paper_positions
+            ORDER BY position_id
+            """
+        ).fetchall()
+    }
+    con.close()
+
+    assert closed == 1
+    assert rows["pos-a"] == ("closed", 1.25, "stale_no_market")
+    assert rows["pos-b"] == ("open", 0.0, None)
 
 
 def test_get_open_positions_returns_only_open(tmp_path: Path) -> None:
