@@ -384,12 +384,18 @@ class KalshiConnector(Connector):
             data = response.json()
             market = data.get("market") or data  # v2 wraps in {"market": {...}}
             status = str(market.get("status", "")).lower()
-            if status not in {"settled", "closed"}:
+            if status not in {"settled", "finalized"}:
                 return None
             result = market.get("result") or market.get("resolution")
             if result is None:
                 return None
-            return str(result).lower()
+            normalized = str(result).lower()
+            if normalized not in {"yes", "no", "void"}:
+                LOGGER.warning(
+                    "Kalshi GET /markets/%s returned unsupported result %r", ticker, result
+                )
+                return None
+            return normalized
         except Exception as exc:
             LOGGER.warning("Kalshi fetch_market_result(%s) failed: %s", ticker, exc)
             return None

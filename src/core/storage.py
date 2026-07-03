@@ -678,10 +678,13 @@ class Storage:
             for r in rows
         ]
 
-    def close_stale_positions(self, max_stale_hours: float) -> int:
+    def close_stale_positions(
+        self, max_stale_hours: float, position_ids: Iterable[str] | None = None
+    ) -> int:
         """
         Auto-close open positions whose last_mark_time_utc is older than
-        ``max_stale_hours``.
+        ``max_stale_hours``. When ``position_ids`` is provided, only rows in
+        that set are eligible for closure.
 
         Contracts that expire or de-list stop appearing in live market snapshots
         so ``mark_open_positions()`` never re-marks them.  Without this sweep,
@@ -693,9 +696,18 @@ class Storage:
         """
         if max_stale_hours <= 0:
             return 0
+        scoped_ids = list(position_ids) if position_ids is not None else None
+        if scoped_ids is not None and not scoped_ids:
+            return 0
         now = datetime.now(timezone.utc)
+        id_filter = ""
+        params: list[object] = [now, now, max_stale_hours]
+        if scoped_ids is not None:
+            placeholders = ", ".join("?" for _ in scoped_ids)
+            id_filter = f" AND position_id IN ({placeholders})"
+            params.extend(scoped_ids)
         rows = self.con.execute(
-            """
+            f"""
             UPDATE paper_positions
             SET status         = 'closed',
                 closed_at_utc  = ?,
@@ -705,9 +717,10 @@ class Storage:
             WHERE status = 'open'
               AND last_mark_time_utc IS NOT NULL
               AND EXTRACT(EPOCH FROM (? - last_mark_time_utc)) / 3600 > ?
+              {id_filter}
             RETURNING position_id
             """,
-            [now, now, max_stale_hours],
+            params,
         ).fetchall()
         return len(rows)
 

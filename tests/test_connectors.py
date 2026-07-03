@@ -99,6 +99,43 @@ def test_kalshi_fallback_stubs_have_both_types():
     assert "unemployment" in types
 
 
+class _FakeResponse:
+    def __init__(self, payload: dict, status_code: int = 200) -> None:
+        self._payload = payload
+        self.status_code = status_code
+        self.text = json.dumps(payload)
+
+    def json(self) -> dict:
+        return self._payload
+
+
+def test_kalshi_fetch_market_result_waits_for_finalized_status():
+    connector = KalshiConnector()
+    connector.http_client.session.get = lambda *args, **kwargs: _FakeResponse(  # type: ignore[method-assign]
+        {"market": {"status": "closed", "result": "yes"}}
+    )
+
+    assert connector.fetch_market_result("CPI-MAY-OVER-0.3") is None
+
+
+def test_kalshi_fetch_market_result_accepts_finalized_result():
+    connector = KalshiConnector()
+    connector.http_client.session.get = lambda *args, **kwargs: _FakeResponse(  # type: ignore[method-assign]
+        {"market": {"status": "finalized", "resolution": "no"}}
+    )
+
+    assert connector.fetch_market_result("CPI-MAY-OVER-0.3") == "no"
+
+
+def test_kalshi_fetch_market_result_rejects_unsupported_result():
+    connector = KalshiConnector()
+    connector.http_client.session.get = lambda *args, **kwargs: _FakeResponse(  # type: ignore[method-assign]
+        {"market": {"status": "finalized", "result": "determined"}}
+    )
+
+    assert connector.fetch_market_result("CPI-MAY-OVER-0.3") is None
+
+
 def test_fred_parse_fixture():
     value = FredConnector.parse_latest_value(_load_json("fred_observations.json"))
     assert value == 246.7
