@@ -678,7 +678,11 @@ class Storage:
             for r in rows
         ]
 
-    def close_stale_positions(self, max_stale_hours: float) -> int:
+    def close_stale_positions(
+        self,
+        max_stale_hours: float,
+        position_ids: Iterable[str] | None = None,
+    ) -> int:
         """
         Auto-close open positions whose last_mark_time_utc is older than
         ``max_stale_hours``.
@@ -689,11 +693,33 @@ class Storage:
         report stale unrealized PnL.
 
         The realized_pnl is set to the last known unrealized_pnl (i.e. position
-        is closed at the last mark price).  Returns the number of rows closed.
+        is closed at the last mark price).  When ``position_ids`` is provided,
+        only those stale rows are eligible. Returns the number of rows closed.
         """
         if max_stale_hours <= 0:
             return 0
         now = datetime.now(timezone.utc)
+        if position_ids is not None:
+            updated = 0
+            for position_id in position_ids:
+                rows = self.con.execute(
+                    """
+                    UPDATE paper_positions
+                    SET status         = 'closed',
+                        closed_at_utc  = ?,
+                        realized_pnl   = COALESCE(unrealized_pnl, 0.0),
+                        unrealized_pnl = 0.0,
+                        close_reason   = 'stale_no_market'
+                    WHERE status = 'open'
+                      AND position_id = ?
+                      AND last_mark_time_utc IS NOT NULL
+                      AND EXTRACT(EPOCH FROM (? - last_mark_time_utc)) / 3600 > ?
+                    RETURNING position_id
+                    """,
+                    [now, position_id, now, max_stale_hours],
+                ).fetchall()
+                updated += len(rows)
+            return updated
         rows = self.con.execute(
             """
             UPDATE paper_positions

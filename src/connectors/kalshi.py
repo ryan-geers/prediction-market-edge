@@ -347,17 +347,17 @@ class KalshiConnector(Connector):
 
     def fetch_market_result(self, ticker: str) -> str | None:
         """
-        Return the settlement result for a specific Kalshi contract ticker.
+        Return the finalized settlement result for a specific Kalshi contract ticker.
 
         Calls ``GET /trade-api/v2/markets/{ticker}`` — this endpoint returns
-        data for *any* market status (open, closed, or settled), unlike the
+        data for *any* market status (open, closed, or finalized), unlike the
         list endpoint which is filtered by the caller.
 
         Returns:
             "yes"  — the YES leg won (YES contract pays $1, NO pays $0)
             "no"   — the NO leg won  (NO contract pays $1, YES pays $0)
-            "void" — contract voided; both sides refunded at $0.50
-            None   — market not yet settled, API unavailable, or unknown result
+            "void" — contract voided; the paper position is refunded downstream
+            None   — market not finalized, API unavailable, or unknown result
 
         The result is intentionally lowercased for safe equality comparisons
         downstream regardless of how Kalshi capitalises it in the response.
@@ -383,13 +383,21 @@ class KalshiConnector(Connector):
                 return None
             data = response.json()
             market = data.get("market") or data  # v2 wraps in {"market": {...}}
-            status = str(market.get("status", "")).lower()
-            if status not in {"settled", "closed"}:
+            status = str(market.get("status", "")).strip().lower()
+            if status not in {"finalized", "settled"}:
                 return None
             result = market.get("result") or market.get("resolution")
             if result is None:
                 return None
-            return str(result).lower()
+            normalized = str(result).strip().lower()
+            if normalized not in {"yes", "no", "void"}:
+                LOGGER.warning(
+                    "Kalshi market %s finalized with unsupported result %r",
+                    ticker,
+                    result,
+                )
+                return None
+            return normalized
         except Exception as exc:
             LOGGER.warning("Kalshi fetch_market_result(%s) failed: %s", ticker, exc)
             return None

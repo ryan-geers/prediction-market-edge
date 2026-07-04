@@ -92,6 +92,39 @@ def test_kalshi_parse_markets_skips_incomplete_quotes():
     assert rows == []
 
 
+def test_kalshi_fetch_market_result_requires_finalized_binary_result():
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def __init__(self, market):
+            self._market = market
+
+        def json(self):
+            return {"market": self._market}
+
+    class FakeSession:
+        def __init__(self, market):
+            self.market = market
+
+        def get(self, *args, **kwargs):
+            return FakeResponse(self.market)
+
+    connector = KalshiConnector()
+
+    connector.http_client.session = FakeSession({"status": "finalized", "result": "YES"})
+    assert connector.fetch_market_result("KXCPI-TEST") == "yes"
+
+    connector.http_client.session = FakeSession({"status": "closed", "result": "YES"})
+    assert connector.fetch_market_result("KXCPI-TEST") is None
+
+    connector.http_client.session = FakeSession({"status": "determined", "result": "NO"})
+    assert connector.fetch_market_result("KXCPI-TEST") is None
+
+    connector.http_client.session = FakeSession({"status": "finalized", "result": "scalar"})
+    assert connector.fetch_market_result("KXCPI-TEST") is None
+
+
 def test_kalshi_fallback_stubs_have_both_types():
     stubs = KalshiConnector._fallback_stubs()
     types = {s["contract_type"] for s in stubs}
