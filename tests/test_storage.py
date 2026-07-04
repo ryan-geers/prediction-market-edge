@@ -3,6 +3,7 @@ Unit tests for Storage.mark_open_positions (Phase 1),
 Storage.close_positions / Storage.get_open_positions (Phase 2), and
 Storage.get_open_position / Storage.add_to_position (Phase 3).
 """
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import duckdb
@@ -245,6 +246,46 @@ def test_mark_updates_last_mark_time(tmp_path: Path) -> None:
     ).fetchone()
     con.close()
     assert ts is not None and ts[0] is not None
+
+
+def test_close_stale_positions_can_target_specific_rows(tmp_path: Path) -> None:
+    """Targeted stale sweeps must not close unrelated stale Kalshi positions."""
+    st = Storage(tmp_path / "t.duckdb")
+    old_mark = datetime.now(timezone.utc) - timedelta(hours=200)
+    kalshi_pos = _open_position(
+        position_id="pos-kalshi",
+        contract_id="KXCPI-TEST",
+        venue="kalshi",
+        avg_entry_price=0.40,
+        net_qty=10.0,
+    ).model_copy(update={"last_mark_time_utc": old_mark, "unrealized_pnl": 2.0})
+    other_pos = _open_position(
+        position_id="pos-other",
+        contract_id="PM-TEST",
+        venue="polymarket",
+        avg_entry_price=0.60,
+        net_qty=10.0,
+    ).model_copy(update={"last_mark_time_utc": old_mark, "unrealized_pnl": -1.0})
+    st.insert_positions([kalshi_pos, other_pos])
+
+    closed = st.close_stale_positions(168.0, position_ids=["pos-other"])
+    st.close()
+
+    assert closed == 1
+    con = duckdb.connect(str(tmp_path / "t.duckdb"))
+    rows = {
+        r[0]: (r[1], r[2], r[3])
+        for r in con.execute(
+            "SELECT position_id, status, close_reason, realized_pnl FROM paper_positions"
+        ).fetchall()
+    }
+    con.close()
+
+    assert rows["pos-kalshi"][0] == "open"
+    assert rows["pos-kalshi"][1] is None
+    assert rows["pos-other"][0] == "closed"
+    assert rows["pos-other"][1] == "stale_no_market"
+    assert rows["pos-other"][2] == -1.0
 
 
 # ── Phase 3: get_open_position / add_to_position ───────────────────────────────
