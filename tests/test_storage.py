@@ -168,7 +168,7 @@ def test_mark_skips_unreliable_fair_mid_fallback(tmp_path: Path) -> None:
     assert row is not None
     assert row[0] == 0.40
     assert row[1] == -5.0
-    assert row[2] == old_mark_time
+    assert row[2] == old_mark_time.replace(tzinfo=None)
 
 
 # ── Phase 2: close_positions / get_open_positions ─────────────────────────────
