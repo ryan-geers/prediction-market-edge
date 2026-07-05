@@ -3,6 +3,7 @@ Unit tests for Storage.mark_open_positions (Phase 1),
 Storage.close_positions / Storage.get_open_positions (Phase 2), and
 Storage.get_open_position / Storage.add_to_position (Phase 3).
 """
+from datetime import timedelta
 from pathlib import Path
 
 import duckdb
@@ -127,6 +128,49 @@ def test_mark_no_matching_open_positions_returns_zero(tmp_path: Path) -> None:
     assert updated == 0
 
 
+def test_mark_skips_unreliable_fair_mid_fallback(tmp_path: Path) -> None:
+    """Broken books must not refresh YES marks from a synthetic fallback mid."""
+    st = Storage(tmp_path / "t.duckdb")
+    old_mark_time = utc_now() - timedelta(hours=200)
+    pos = _open_position(avg_entry_price=0.50, net_qty=50.0)
+    pos = pos.model_copy(
+        update={
+            "direction": "yes",
+            "mark_price": 0.40,
+            "unrealized_pnl": -5.0,
+            "last_mark_time_utc": old_mark_time,
+        }
+    )
+    st.insert_positions([pos])
+
+    mark = PositionMark(
+        contract_id="CPI-TEST",
+        venue="KALSHI",
+        mark_price=0.50,
+        yes_bid=0.0,
+        yes_ask=1.0,
+        quote_reliable=False,
+    )
+    updated = st.mark_open_positions([mark])
+    st.close()
+
+    assert updated == 0
+    con = duckdb.connect(str(tmp_path / "t.duckdb"))
+    row = con.execute(
+        """
+        SELECT mark_price, unrealized_pnl, last_mark_time_utc
+        FROM paper_positions WHERE position_id = ?
+        """,
+        [pos.position_id],
+    ).fetchone()
+    con.close()
+
+    assert row is not None
+    assert row[0] == 0.40
+    assert row[1] == -5.0
+    assert row[2] == old_mark_time
+
+
 # ── Phase 2: close_positions / get_open_positions ─────────────────────────────
 
 def test_close_positions_updates_status_and_pnl(tmp_path: Path) -> None:
@@ -223,6 +267,38 @@ def test_get_open_positions_includes_direction(tmp_path: Path) -> None:
     st.close()
 
     assert result[0].direction == "yes"
+
+
+def test_close_stale_positions_can_limit_to_position_ids(tmp_path: Path) -> None:
+    """Callers can leave unresolved Kalshi rows open while sweeping other stale rows."""
+    st = Storage(tmp_path / "t.duckdb")
+    old_mark_time = utc_now() - timedelta(hours=200)
+    kalshi_pos = _open_position(position_id="pos-kalshi", venue="kalshi")
+    other_pos = _open_position(position_id="pos-other", venue="other")
+    st.insert_positions([
+        kalshi_pos.model_copy(
+            update={"last_mark_time_utc": old_mark_time, "unrealized_pnl": 3.0}
+        ),
+        other_pos.model_copy(
+            update={"last_mark_time_utc": old_mark_time, "unrealized_pnl": 4.0}
+        ),
+    ])
+
+    closed = st.close_stale_positions(168.0, position_ids=["pos-other"])
+    st.close()
+
+    assert closed == 1
+    con = duckdb.connect(str(tmp_path / "t.duckdb"))
+    rows = {
+        r[0]: (r[1], r[2])
+        for r in con.execute(
+            "SELECT position_id, status, realized_pnl FROM paper_positions"
+        ).fetchall()
+    }
+    con.close()
+
+    assert rows["pos-kalshi"] == ("open", 0.0)
+    assert rows["pos-other"] == ("closed", 4.0)
 
 
 def test_mark_updates_last_mark_time(tmp_path: Path) -> None:

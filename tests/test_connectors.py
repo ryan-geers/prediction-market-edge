@@ -52,6 +52,7 @@ def test_kalshi_normalization_cpi():
     assert row["contract_type"] == "cpi"
     # _parse_threshold now extracts the threshold from the OVER-{value} format.
     assert row["threshold"] == pytest.approx(0.3)
+    assert row["last_trade"] is None
 
 
 def test_kalshi_normalization_preserves_zero_dollar_prices():
@@ -90,6 +91,43 @@ def test_kalshi_parse_markets_skips_incomplete_quotes():
         series_ticker="KXCPI",
     )
     assert rows == []
+
+
+class _KalshiResponse:
+    def __init__(self, payload, status_code: int = 200):
+        self._payload = payload
+        self.status_code = status_code
+        self.text = json.dumps(payload)
+
+    def json(self):
+        return self._payload
+
+
+def test_kalshi_fetch_market_result_requires_finalized_status():
+    connector = KalshiConnector()
+    connector.http_client.session.get = lambda *args, **kwargs: _KalshiResponse(  # type: ignore[method-assign]
+        {"market": {"status": "closed", "result": "yes"}}
+    )
+
+    assert connector.fetch_market_result("KXTEST") is None
+
+
+def test_kalshi_fetch_market_result_rejects_unknown_result():
+    connector = KalshiConnector()
+    connector.http_client.session.get = lambda *args, **kwargs: _KalshiResponse(  # type: ignore[method-assign]
+        {"market": {"status": "finalized", "result": "undetermined"}}
+    )
+
+    assert connector.fetch_market_result("KXTEST") is None
+
+
+def test_kalshi_fetch_market_result_returns_finalized_binary_result():
+    connector = KalshiConnector()
+    connector.http_client.session.get = lambda *args, **kwargs: _KalshiResponse(  # type: ignore[method-assign]
+        {"market": {"status": "finalized", "result": "yes"}}
+    )
+
+    assert connector.fetch_market_result("KXTEST") == "yes"
 
 
 def test_kalshi_fallback_stubs_have_both_types():

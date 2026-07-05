@@ -9,13 +9,23 @@ from uuid import uuid4
 from src.core.market_quotes import assess_yes_quote
 from src.core.config import get_settings
 from src.core.logging import setup_logging
-from src.core.schemas import PositionClose, PositionMark, RunManifest
+from src.core.schemas import PaperPositionRecord, PositionClose, PositionMark, RunManifest
 from src.core.storage import Storage
 from src.pipeline.paper_trading import apply_dedup, apply_exits, open_positions_by_family
 from src.pipeline.reporting import generate_run_report, generate_run_report_html
 from src.theses.registry import build_registry
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _settlement_exit_price(result: str, pos: PaperPositionRecord) -> float | None:
+    if result == "void":
+        return pos.avg_entry_price
+    if pos.direction not in {"yes", "no"}:
+        return None
+    if pos.direction == "yes":
+        return 1.0 if result == "yes" else 0.0
+    return 1.0 if result == "no" else 0.0
 
 
 def _git_sha() -> str:
@@ -122,16 +132,16 @@ def run_pipeline(thesis_name: str = "economic_indicators") -> tuple[str, Path | 
                     if result is None:
                         continue  # not settled yet — falls through to stale_no_market
 
-                    # Compute direction-aware exit price.
-                    # YES position: YES wins → 1.0, NO wins → 0.0, void → 0.5
-                    # NO position:  NO wins  → 1.0 (YES is 0), YES wins → 0.0, void → 0.5
-                    direction = pos.direction or "yes"
-                    if result == "void":
-                        exit_price = 0.5
-                    elif direction == "yes":
-                        exit_price = 1.0 if result == "yes" else 0.0
-                    else:  # direction == "no"
-                        exit_price = 1.0 if result == "no" else 0.0
+                    # Compute direction-aware exit price. Void markets refund
+                    # the original fill; directionless legacy rows cannot be
+                    # safely settled because the winning leg is unknown.
+                    exit_price = _settlement_exit_price(result, pos)
+                    if exit_price is None:
+                        LOGGER.warning(
+                            "Kalshi settlement: leaving %s open because direction is unknown",
+                            pos.position_id,
+                        )
+                        continue
 
                     realized = (exit_price - pos.avg_entry_price) * pos.net_qty
                     settlement_closes.append(
@@ -151,12 +161,27 @@ def run_pipeline(thesis_name: str = "economic_indicators") -> tuple[str, Path | 
                     "Settled %d position(s) at contract resolution price", settled_count
                 )
 
-            # Any stale positions that Kalshi hasn't resolved yet (e.g. a
-            # non-Kalshi venue or a contract still pending outcome) are swept
+            # Any non-Kalshi stale positions that cannot be resolved are swept
             # out at the last-known mark so they don't block family quota.
+            # Kalshi rows stay open until the settlement endpoint returns a
+            # final result; a transient/auth failure must not corrupt PnL.
             unresolved = [p for p in stale_positions if p.position_id not in resolved_ids]
-            if unresolved:
-                stale_closed = storage.close_stale_positions(settings.paper_stale_position_close_hours)
+            unresolved_non_kalshi = [
+                p for p in unresolved if p.venue.lower() != "kalshi"
+            ]
+            unresolved_kalshi = [
+                p for p in unresolved if p.venue.lower() == "kalshi"
+            ]
+            if unresolved_kalshi:
+                LOGGER.warning(
+                    "Leaving %d stale Kalshi position(s) open until settlement is available",
+                    len(unresolved_kalshi),
+                )
+            if unresolved_non_kalshi:
+                stale_closed = storage.close_stale_positions(
+                    settings.paper_stale_position_close_hours,
+                    position_ids=[p.position_id for p in unresolved_non_kalshi],
+                )
                 if stale_closed:
                     LOGGER.info(
                         "Auto-closed %d unresolved stale position(s) at last mark "
