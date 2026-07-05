@@ -7,6 +7,10 @@ on:
     # In standard time (CST) the same UTC instants fall ~07:00 / 13:00 / 19:00 / ~01:00 local (one-hour shift).
     - cron: "0 5,11,17,23 * * *"
 
+concurrency:
+  group: pme-run-pipeline
+  cancel-in-progress: false
+
 # Shared pipeline logic with local: `pme run` then report helpers; artifacts restore/persist state on ephemeral runners.
 jobs:
   run:
@@ -125,15 +129,18 @@ jobs:
         id: audit
         run: |
           mkdir -p data/reports
+          set +e
           python scripts/audit_db.py \
             --db data/pme.duckdb \
             --out data/reports/audit_latest.md \
             --json data/reports/audit_latest.json \
             --github-summary
+          audit_exit=$?
+          set -e
           # Capture exit code but never let it fail the job — audit is
           # advisory only. Critical findings surface as a workflow warning
           # annotation in the step below.
-          echo "audit_exit=$?" >> "$GITHUB_OUTPUT"
+          echo "audit_exit=$audit_exit" >> "$GITHUB_OUTPUT"
         continue-on-error: true
 
       - name: Annotate findings
