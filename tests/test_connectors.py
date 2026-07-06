@@ -155,6 +155,44 @@ def test_kalshi_parse_markets_fixture():
     assert rows[0]["contract_id"] == "CPI-MAY-OVER-03"
 
 
+class _KalshiMarketResponse:
+    status_code = 200
+    text = ""
+
+    def __init__(self, market: dict) -> None:
+        self._market = market
+
+    def json(self) -> dict:
+        return {"market": self._market}
+
+
+def test_kalshi_fetch_market_result_accepts_finalized_binary_result():
+    connector = KalshiConnector()
+    connector.http_client.session.get = lambda *args, **kwargs: _KalshiMarketResponse(  # type: ignore[method-assign]
+        {"status": "finalized", "result": "YES"}
+    )
+
+    assert connector.fetch_market_result("KALSHI-YES") == "yes"
+
+
+def test_kalshi_fetch_market_result_ignores_pending_closed_market():
+    connector = KalshiConnector()
+    connector.http_client.session.get = lambda *args, **kwargs: _KalshiMarketResponse(  # type: ignore[method-assign]
+        {"status": "closed", "result": "yes"}
+    )
+
+    assert connector.fetch_market_result("KALSHI-CLOSED") is None
+
+
+def test_kalshi_fetch_market_result_rejects_unsupported_final_result():
+    connector = KalshiConnector()
+    connector.http_client.session.get = lambda *args, **kwargs: _KalshiMarketResponse(  # type: ignore[method-assign]
+        {"status": "finalized", "result": "draw"}
+    )
+
+    assert connector.fetch_market_result("KALSHI-DRAW") is None
+
+
 def test_polymarket_parse_markets_fixture():
     connector = PolymarketConnector()
     rows = connector.parse_markets(_load_json("polymarket_markets.json"))
