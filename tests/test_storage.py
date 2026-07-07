@@ -4,6 +4,7 @@ Storage.close_positions / Storage.get_open_positions (Phase 2), and
 Storage.get_open_position / Storage.add_to_position (Phase 3).
 """
 from pathlib import Path
+from datetime import timedelta
 
 import duckdb
 
@@ -245,6 +246,62 @@ def test_mark_updates_last_mark_time(tmp_path: Path) -> None:
     ).fetchone()
     con.close()
     assert ts is not None and ts[0] is not None
+
+
+def test_unreliable_quote_does_not_apply_fair_mid_fallback(tmp_path: Path) -> None:
+    """Broken bid/ask data must not overwrite a YES row with a phantom mid."""
+    st = Storage(tmp_path / "t.duckdb")
+    pos = _open_position(avg_entry_price=0.20, net_qty=10.0)
+    pos = pos.model_copy(update={"direction": "yes", "mark_price": 0.20})
+    st.insert_positions([pos])
+
+    updated = st.mark_open_positions([
+        PositionMark(
+            contract_id="CPI-TEST",
+            venue="KALSHI",
+            mark_price=0.50,
+            yes_bid=0.0,
+            yes_ask=1.0,
+            quote_reliable=False,
+        )
+    ])
+    st.close()
+
+    assert updated == 0
+    con = duckdb.connect(str(tmp_path / "t.duckdb"))
+    row = con.execute(
+        "SELECT mark_price, unrealized_pnl FROM paper_positions WHERE position_id = ?",
+        [pos.position_id],
+    ).fetchone()
+    con.close()
+    assert row is not None
+    assert row[0] == 0.20
+    assert row[1] == 0.0
+
+
+def test_close_stale_positions_can_be_limited_to_explicit_ids(tmp_path: Path) -> None:
+    st = Storage(tmp_path / "t.duckdb")
+    old_mark = utc_now() - timedelta(hours=49)
+    kalshi = _open_position(position_id="pos-kalshi", venue="kalshi")
+    kalshi = kalshi.model_copy(update={"last_mark_time_utc": old_mark, "unrealized_pnl": -3.0})
+    poly = _open_position(position_id="pos-poly", venue="polymarket")
+    poly = poly.model_copy(update={"last_mark_time_utc": old_mark, "unrealized_pnl": 2.0})
+    st.insert_positions([kalshi, poly])
+
+    closed = st.close_stale_positions(24, position_ids=["pos-poly"])
+    st.close()
+
+    assert closed == 1
+    con = duckdb.connect(str(tmp_path / "t.duckdb"))
+    rows = {
+        r[0]: (r[1], r[2], r[3])
+        for r in con.execute(
+            "SELECT position_id, status, realized_pnl, close_reason FROM paper_positions"
+        ).fetchall()
+    }
+    con.close()
+    assert rows["pos-kalshi"] == ("open", 0.0, None)
+    assert rows["pos-poly"] == ("closed", 2.0, "stale_no_market")
 
 
 # ── Phase 3: get_open_position / add_to_position ───────────────────────────────

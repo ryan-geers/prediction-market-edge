@@ -9,13 +9,26 @@ from uuid import uuid4
 from src.core.market_quotes import assess_yes_quote
 from src.core.config import get_settings
 from src.core.logging import setup_logging
-from src.core.schemas import PositionClose, PositionMark, RunManifest
+from src.core.schemas import PaperPositionRecord, PositionClose, PositionMark, RunManifest
 from src.core.storage import Storage
 from src.pipeline.paper_trading import apply_dedup, apply_exits, open_positions_by_family
 from src.pipeline.reporting import generate_run_report, generate_run_report_html
 from src.theses.registry import build_registry
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _is_kalshi_venue(venue: str | None) -> bool:
+    return (venue or "").lower() == "kalshi"
+
+
+def _settlement_exit_price(position: PaperPositionRecord, result: str) -> float:
+    direction = position.direction or "yes"
+    if result == "void":
+        return position.avg_entry_price
+    if direction == "yes":
+        return 1.0 if result == "yes" else 0.0
+    return 1.0 if result == "no" else 0.0
 
 
 def _git_sha() -> str:
@@ -81,8 +94,8 @@ def run_pipeline(thesis_name: str = "economic_indicators") -> tuple[str, Path | 
     # almost certainly expired or been de-listed.  For Kalshi binary contracts
     # the outcome is definitive: YES pays $1 or $0 at settlement.  We check
     # the Kalshi API first so each position is closed at the true settlement
-    # price rather than the last-known mark; anything we can't resolve falls
-    # back to stale_no_market at the last mark.
+    # price rather than the last-known mark.  Kalshi rows with pending outcomes
+    # stay open; only non-Kalshi stale rows fall back to stale_no_market.
     if settings.paper_stale_position_close_hours > 0:
         stale_positions = storage.get_stale_open_positions(settings.paper_stale_position_close_hours)
         if stale_positions:
@@ -107,7 +120,9 @@ def run_pipeline(thesis_name: str = "economic_indicators") -> tuple[str, Path | 
 
             if kalshi_connector is not None:
                 # Deduplicate: one API call per contract_id.
-                unique_contracts = {p.contract_id for p in stale_positions if p.venue == "kalshi"}
+                unique_contracts = {
+                    p.contract_id for p in stale_positions if _is_kalshi_venue(p.venue)
+                }
                 contract_results: dict[str, str] = {}
                 for ticker in unique_contracts:
                     result = kalshi_connector.fetch_market_result(ticker)
@@ -120,18 +135,11 @@ def run_pipeline(thesis_name: str = "economic_indicators") -> tuple[str, Path | 
                 for pos in stale_positions:
                     result = contract_results.get(pos.contract_id)
                     if result is None:
-                        continue  # not settled yet — falls through to stale_no_market
+                        continue
 
-                    # Compute direction-aware exit price.
-                    # YES position: YES wins → 1.0, NO wins → 0.0, void → 0.5
-                    # NO position:  NO wins  → 1.0 (YES is 0), YES wins → 0.0, void → 0.5
-                    direction = pos.direction or "yes"
-                    if result == "void":
-                        exit_price = 0.5
-                    elif direction == "yes":
-                        exit_price = 1.0 if result == "yes" else 0.0
-                    else:  # direction == "no"
-                        exit_price = 1.0 if result == "no" else 0.0
+                    # Compute direction-aware exit price. Voided contracts refund
+                    # the paper entry price so they do not create artificial PnL.
+                    exit_price = _settlement_exit_price(pos, result)
 
                     realized = (exit_price - pos.avg_entry_price) * pos.net_qty
                     settlement_closes.append(
@@ -151,19 +159,31 @@ def run_pipeline(thesis_name: str = "economic_indicators") -> tuple[str, Path | 
                     "Settled %d position(s) at contract resolution price", settled_count
                 )
 
-            # Any stale positions that Kalshi hasn't resolved yet (e.g. a
-            # non-Kalshi venue or a contract still pending outcome) are swept
-            # out at the last-known mark so they don't block family quota.
+            # Kalshi positions with pending/unknown outcomes must not be closed
+            # at stale marks.  Only explicitly selected non-Kalshi stale rows
+            # fall back to last-known mark closure.
             unresolved = [p for p in stale_positions if p.position_id not in resolved_ids]
-            if unresolved:
-                stale_closed = storage.close_stale_positions(settings.paper_stale_position_close_hours)
+            fallback_stale_ids = [
+                p.position_id for p in unresolved if not _is_kalshi_venue(p.venue)
+            ]
+            if fallback_stale_ids:
+                stale_closed = storage.close_stale_positions(
+                    settings.paper_stale_position_close_hours,
+                    position_ids=fallback_stale_ids,
+                )
                 if stale_closed:
                     LOGGER.info(
-                        "Auto-closed %d unresolved stale position(s) at last mark "
+                        "Auto-closed %d non-Kalshi stale position(s) at last mark "
                         "(last_mark_time > %.0fh ago)",
                         stale_closed,
                         settings.paper_stale_position_close_hours,
                     )
+            pending_kalshi = len(unresolved) - len(fallback_stale_ids)
+            if pending_kalshi:
+                LOGGER.info(
+                    "Left %d stale Kalshi position(s) open pending finalized settlement",
+                    pending_kalshi,
+                )
 
     # Phase 2: evaluate exit rules against open positions before creating new entries.
     open_positions = storage.get_open_positions()

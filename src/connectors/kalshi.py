@@ -170,7 +170,7 @@ class KalshiConnector(Connector):
         bid = _normalize_price(bid_raw)
         ask = _normalize_price(ask_raw)
         last_raw = _first_price_value(item, "last_price_dollars", "last_price")
-        last = _normalize_price(last_raw) if last_raw is not None else (bid + ask) / 2
+        last = _normalize_price(last_raw) if last_raw is not None else None
         ticker = item.get("ticker", "CPI-MAY-OVER-0.3")
 
         resolved_series = series_ticker or item.get("series_ticker", "") or ""
@@ -356,7 +356,7 @@ class KalshiConnector(Connector):
         Returns:
             "yes"  — the YES leg won (YES contract pays $1, NO pays $0)
             "no"   — the NO leg won  (NO contract pays $1, YES pays $0)
-            "void" — contract voided; both sides refunded at $0.50
+            "void" — contract voided; positions should be refunded at entry
             None   — market not yet settled, API unavailable, or unknown result
 
         The result is intentionally lowercased for safe equality comparisons
@@ -384,12 +384,20 @@ class KalshiConnector(Connector):
             data = response.json()
             market = data.get("market") or data  # v2 wraps in {"market": {...}}
             status = str(market.get("status", "")).lower()
-            if status not in {"settled", "closed"}:
+            if status not in {"finalized", "settled"}:
                 return None
             result = market.get("result") or market.get("resolution")
             if result is None:
                 return None
-            return str(result).lower()
+            normalized = str(result).lower()
+            if normalized not in {"yes", "no", "void"}:
+                LOGGER.warning(
+                    "Kalshi market %s has unsupported finalized result %r; leaving unresolved",
+                    ticker,
+                    result,
+                )
+                return None
+            return normalized
         except Exception as exc:
             LOGGER.warning("Kalshi fetch_market_result(%s) failed: %s", ticker, exc)
             return None

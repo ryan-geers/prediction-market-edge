@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
 
 import duckdb
 
@@ -404,7 +404,11 @@ class Storage:
                 # fair_mid is used as YES fallback when bid is 0 (e.g. near-certain contracts
                 # whose YES side is so likely that nobody posts a bid, but last_trade is still
                 # meaningful). Without this, these positions are never re-marked.
-                fair_mid = float(mark.mark_price) if mark.mark_price is not None else None
+                fair_mid = (
+                    float(mark.mark_price)
+                    if mark.quote_reliable and mark.mark_price is not None
+                    else None
+                )
                 rows = self.con.execute(
                     """
                     UPDATE paper_positions
@@ -678,7 +682,11 @@ class Storage:
             for r in rows
         ]
 
-    def close_stale_positions(self, max_stale_hours: float) -> int:
+    def close_stale_positions(
+        self,
+        max_stale_hours: float,
+        position_ids: Sequence[str] | None = None,
+    ) -> int:
         """
         Auto-close open positions whose last_mark_time_utc is older than
         ``max_stale_hours``.
@@ -688,14 +696,24 @@ class Storage:
         those positions accumulate indefinitely, consume per-family quota, and
         report stale unrealized PnL.
 
-        The realized_pnl is set to the last known unrealized_pnl (i.e. position
-        is closed at the last mark price).  Returns the number of rows closed.
+        When ``position_ids`` is provided, only those already-inspected rows are
+        eligible for closure.  The realized_pnl is set to the last known
+        unrealized_pnl (i.e. position is closed at the last mark price).
+        Returns the number of rows closed.
         """
         if max_stale_hours <= 0:
             return 0
+        if position_ids is not None and not position_ids:
+            return 0
         now = datetime.now(timezone.utc)
+        position_filter = ""
+        params: list[object] = [now, now, max_stale_hours]
+        if position_ids is not None:
+            placeholders = ", ".join("?" for _ in position_ids)
+            position_filter = f" AND position_id IN ({placeholders})"
+            params.extend(position_ids)
         rows = self.con.execute(
-            """
+            f"""
             UPDATE paper_positions
             SET status         = 'closed',
                 closed_at_utc  = ?,
@@ -705,9 +723,10 @@ class Storage:
             WHERE status = 'open'
               AND last_mark_time_utc IS NOT NULL
               AND EXTRACT(EPOCH FROM (? - last_mark_time_utc)) / 3600 > ?
+              {position_filter}
             RETURNING position_id
             """,
-            [now, now, max_stale_hours],
+            params,
         ).fetchall()
         return len(rows)
 
