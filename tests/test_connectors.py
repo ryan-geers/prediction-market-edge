@@ -16,6 +16,24 @@ def _load_json(name: str):
     return json.loads((FIXTURES_DIR / name).read_text())
 
 
+class _FakeResponse:
+    def __init__(self, payload: dict, status_code: int = 200) -> None:
+        self._payload = payload
+        self.status_code = status_code
+        self.text = json.dumps(payload)
+
+    def json(self) -> dict:
+        return self._payload
+
+
+def _connector_with_market_response(payload: dict) -> KalshiConnector:
+    connector = KalshiConnector()
+    connector.http_client.session.get = (  # type: ignore[method-assign]
+        lambda *args, **kwargs: _FakeResponse(payload)
+    )
+    return connector
+
+
 def test_fred_fallback_data():
     connector = FredConnector()
     connector._fetch_series = lambda _series: None  # type: ignore[method-assign]
@@ -72,6 +90,41 @@ def test_kalshi_normalization_preserves_zero_dollar_prices():
     assert row["best_bid"] == 0.0
     assert row["best_ask"] == pytest.approx(0.01)
     assert row["last_trade"] == 0.0
+
+
+def test_kalshi_normalization_preserves_absent_last_trade():
+    connector = KalshiConnector()
+    row = connector._normalize_market(
+        {
+            "ticker": "CPI-MAY-OVER-0.3",
+            "title": "CPI",
+            "yes_bid": 0,
+            "yes_ask": 10,
+        },
+        series_ticker="KXCPI",
+    )
+    assert row["best_bid"] == 0.0
+    assert row["best_ask"] == pytest.approx(0.10)
+    assert row["last_trade"] is None
+
+
+def test_kalshi_fetch_market_result_accepts_finalized_binary_result():
+    connector = _connector_with_market_response(
+        {"market": {"status": "finalized", "result": "YES"}}
+    )
+    assert connector.fetch_market_result("KXCPI-26MAY-T0.3") == "yes"
+
+
+def test_kalshi_fetch_market_result_rejects_pending_closed_status():
+    connector = _connector_with_market_response({"market": {"status": "closed", "result": "YES"}})
+    assert connector.fetch_market_result("KXCPI-26MAY-T0.3") is None
+
+
+def test_kalshi_fetch_market_result_rejects_unsupported_finalized_result():
+    connector = _connector_with_market_response(
+        {"market": {"status": "finalized", "result": "above"}}
+    )
+    assert connector.fetch_market_result("KXSCALAR-TEST") is None
 
 
 def test_kalshi_parse_markets_skips_incomplete_quotes():
