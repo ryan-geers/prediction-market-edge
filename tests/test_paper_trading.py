@@ -1,9 +1,11 @@
 from pathlib import Path
+from datetime import datetime, timezone
 
 from src.core.config import Settings
 from src.core.schemas import MarketSnapshotRecord, PaperPositionRecord, PositionMark, SignalRecord
 from src.core.storage import Storage
 from src.pipeline.paper_trading import apply_dedup, apply_exits, simulate_paper_trades
+from src.pipeline.run import _is_kalshi_venue, _position_close_for_settlement
 
 
 def _base_signal() -> SignalRecord:
@@ -427,3 +429,22 @@ def test_apply_dedup_contract_family_respects_existing_book() -> None:
     new_positions, add_tos, acted = apply_dedup([cand], {}, settings, None, {"KXCPI": 2})
     assert new_positions == []
     assert acted == set()
+
+
+def test_settlement_void_refunds_entry_price_for_yes_and_no() -> None:
+    closed_at = datetime.now(timezone.utc)
+    yes_pos = _open_position(direction="yes", avg_entry_price=0.72, net_qty=10.0)
+    no_pos = _open_position(direction="no", avg_entry_price=0.38, net_qty=10.0)
+
+    yes_close = _position_close_for_settlement(yes_pos, "void", closed_at)
+    no_close = _position_close_for_settlement(no_pos, "void", closed_at)
+
+    assert yes_close.avg_exit_price == yes_pos.avg_entry_price
+    assert no_close.avg_exit_price == no_pos.avg_entry_price
+    assert yes_close.realized_pnl == 0.0
+    assert no_close.realized_pnl == 0.0
+
+
+def test_kalshi_venue_check_is_case_insensitive() -> None:
+    assert _is_kalshi_venue("kalshi")
+    assert _is_kalshi_venue("KALSHI")
