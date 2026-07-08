@@ -401,17 +401,20 @@ class Storage:
                 yes_bid = float(mark.yes_bid)
                 yes_ask = float(mark.yes_ask)
                 broken_no_book = yes_bid <= 0 and yes_ask >= 0.999
-                # fair_mid is used as YES fallback when bid is 0 (e.g. near-certain contracts
-                # whose YES side is so likely that nobody posts a bid, but last_trade is still
-                # meaningful). Without this, these positions are never re-marked.
-                fair_mid = float(mark.mark_price) if mark.mark_price is not None else None
+                # Only reliable fair mids may update legacy NULL-direction rows.
+                # Directional YES rows use executable bids; a bid=0 book is not a
+                # sellable mark even if the snapshot carries a stale midpoint.
+                fair_mid = (
+                    float(mark.mark_price)
+                    if mark.mark_price is not None and mark.quote_reliable
+                    else None
+                )
                 rows = self.con.execute(
                     """
                     UPDATE paper_positions
                     SET
                       mark_price = CASE
                         WHEN direction = 'yes' AND ? >= ? THEN ?
-                        WHEN direction = 'yes' AND ? IS NOT NULL THEN ?
                         WHEN direction = 'no' AND NOT ? THEN ?
                         WHEN direction IS NULL AND ? IS NOT NULL THEN ?
                         ELSE mark_price
@@ -420,8 +423,6 @@ class Storage:
                         WHEN direction = 'no' AND NOT ? THEN
                           ((1.0 - ?) - avg_entry_price) * net_qty
                         WHEN direction = 'yes' AND ? >= ? THEN
-                          (? - avg_entry_price) * net_qty
-                        WHEN direction = 'yes' AND ? IS NOT NULL THEN
                           (? - avg_entry_price) * net_qty
                         WHEN direction IS NULL AND ? IS NOT NULL THEN
                           (? - avg_entry_price) * net_qty
@@ -433,7 +434,6 @@ class Storage:
                       AND venue = ?
                       AND (
                         (direction = 'yes' AND ? >= ?)
-                        OR (direction = 'yes' AND ? IS NOT NULL)
                         OR (direction = 'no' AND NOT ?)
                         OR (direction IS NULL AND ? IS NOT NULL)
                       )
@@ -442,13 +442,11 @@ class Storage:
                     [
                         # SET mark_price
                         yes_bid, min_bid, yes_bid,   # YES bid branch
-                        fair_mid, fair_mid,           # YES fair-mid fallback
                         broken_no_book, yes_ask,      # NO branch
                         fair_mid, fair_mid,           # NULL direction
                         # SET unrealized_pnl
                         broken_no_book, yes_ask,      # NO branch
                         yes_bid, min_bid, yes_bid,    # YES bid branch
-                        fair_mid, fair_mid,           # YES fair-mid fallback
                         fair_mid, fair_mid,           # NULL direction
                         # timestamp / contract filter
                         mark.last_mark_time_utc,
@@ -456,7 +454,6 @@ class Storage:
                         mark.venue,
                         # WHERE clause
                         yes_bid, min_bid,             # YES bid
-                        fair_mid,                     # YES fair-mid fallback
                         broken_no_book,               # NO
                         fair_mid,                     # NULL direction
                     ],
@@ -678,7 +675,11 @@ class Storage:
             for r in rows
         ]
 
-    def close_stale_positions(self, max_stale_hours: float) -> int:
+    def close_stale_positions(
+        self,
+        max_stale_hours: float,
+        position_ids: Iterable[str] | None = None,
+    ) -> int:
         """
         Auto-close open positions whose last_mark_time_utc is older than
         ``max_stale_hours``.
@@ -689,13 +690,24 @@ class Storage:
         report stale unrealized PnL.
 
         The realized_pnl is set to the last known unrealized_pnl (i.e. position
-        is closed at the last mark price).  Returns the number of rows closed.
+        is closed at the last mark price). ``position_ids`` can restrict the
+        sweep after callers separate positions that require settlement lookup
+        from those safe to close by age. Returns the number of rows closed.
         """
         if max_stale_hours <= 0:
             return 0
+        ids = list(position_ids) if position_ids is not None else None
+        if ids is not None and not ids:
+            return 0
         now = datetime.now(timezone.utc)
+        id_filter = ""
+        params: list[object] = [now, now, max_stale_hours]
+        if ids is not None:
+            placeholders = ", ".join("?" for _ in ids)
+            id_filter = f" AND position_id IN ({placeholders})"
+            params.extend(ids)
         rows = self.con.execute(
-            """
+            f"""
             UPDATE paper_positions
             SET status         = 'closed',
                 closed_at_utc  = ?,
@@ -705,9 +717,10 @@ class Storage:
             WHERE status = 'open'
               AND last_mark_time_utc IS NOT NULL
               AND EXTRACT(EPOCH FROM (? - last_mark_time_utc)) / 3600 > ?
+              {id_filter}
             RETURNING position_id
             """,
-            [now, now, max_stale_hours],
+            params,
         ).fetchall()
         return len(rows)
 
