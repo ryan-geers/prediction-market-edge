@@ -81,8 +81,10 @@ def run_pipeline(thesis_name: str = "economic_indicators") -> tuple[str, Path | 
     # almost certainly expired or been de-listed.  For Kalshi binary contracts
     # the outcome is definitive: YES pays $1 or $0 at settlement.  We check
     # the Kalshi API first so each position is closed at the true settlement
-    # price rather than the last-known mark; anything we can't resolve falls
-    # back to stale_no_market at the last mark.
+    # price rather than the last-known mark. Kalshi positions without a confirmed
+    # result stay open for a future run; closing them at a stale mark would
+    # corrupt realized PnL if settlement is merely delayed or temporarily
+    # unavailable.
     if settings.paper_stale_position_close_hours > 0:
         stale_positions = storage.get_stale_open_positions(settings.paper_stale_position_close_hours)
         if stale_positions:
@@ -151,15 +153,22 @@ def run_pipeline(thesis_name: str = "economic_indicators") -> tuple[str, Path | 
                     "Settled %d position(s) at contract resolution price", settled_count
                 )
 
-            # Any stale positions that Kalshi hasn't resolved yet (e.g. a
-            # non-Kalshi venue or a contract still pending outcome) are swept
-            # out at the last-known mark so they don't block family quota.
+            # Non-Kalshi stale rows do not currently have a settlement resolver,
+            # so keep the legacy last-mark fallback scoped to those rows only.
+            # Unresolved Kalshi rows must remain open until fetch_market_result()
+            # returns a definitive yes/no/void result.
             unresolved = [p for p in stale_positions if p.position_id not in resolved_ids]
-            if unresolved:
-                stale_closed = storage.close_stale_positions(settings.paper_stale_position_close_hours)
+            stale_fallback_ids = [
+                p.position_id for p in unresolved if p.venue.lower() != "kalshi"
+            ]
+            if stale_fallback_ids:
+                stale_closed = storage.close_stale_positions(
+                    settings.paper_stale_position_close_hours,
+                    position_ids=stale_fallback_ids,
+                )
                 if stale_closed:
                     LOGGER.info(
-                        "Auto-closed %d unresolved stale position(s) at last mark "
+                        "Auto-closed %d non-Kalshi stale position(s) at last mark "
                         "(last_mark_time > %.0fh ago)",
                         stale_closed,
                         settings.paper_stale_position_close_hours,
