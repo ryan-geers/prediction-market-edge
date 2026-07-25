@@ -160,3 +160,55 @@ def test_polymarket_parse_markets_fixture():
     rows = connector.parse_markets(_load_json("polymarket_markets.json"))
     assert len(rows) == 1
     assert rows[0]["contract_id"] == "pm-abc"
+
+
+class _FakeResponse:
+    def __init__(self, payload, status_code: int = 200):
+        self._payload = payload
+        self.status_code = status_code
+        self.text = str(payload)
+
+    def json(self):
+        return self._payload
+
+
+def test_kalshi_fetch_market_result_requires_finalized_status():
+    """Pending closed markets must not be treated as settled even if result is set."""
+    connector = KalshiConnector()
+    connector.http_client.session.get = lambda *a, **k: _FakeResponse(  # type: ignore[method-assign]
+        {"market": {"status": "closed", "result": "yes"}}
+    )
+    assert connector.fetch_market_result("KXTEST") is None
+
+
+def test_kalshi_fetch_market_result_rejects_determined_status():
+    """Determined results can still be disputed — wait for finalized payout."""
+    connector = KalshiConnector()
+    connector.http_client.session.get = lambda *a, **k: _FakeResponse(  # type: ignore[method-assign]
+        {"market": {"status": "determined", "result": "no"}}
+    )
+    assert connector.fetch_market_result("KXTEST") is None
+
+
+def test_kalshi_fetch_market_result_rejects_unknown_result():
+    connector = KalshiConnector()
+    connector.http_client.session.get = lambda *a, **k: _FakeResponse(  # type: ignore[method-assign]
+        {"market": {"status": "finalized", "result": "scalar"}}
+    )
+    assert connector.fetch_market_result("KXTEST") is None
+
+
+def test_kalshi_fetch_market_result_returns_finalized_binary_result():
+    connector = KalshiConnector()
+    connector.http_client.session.get = lambda *a, **k: _FakeResponse(  # type: ignore[method-assign]
+        {"market": {"status": "finalized", "result": "yes"}}
+    )
+    assert connector.fetch_market_result("KXTEST") == "yes"
+
+
+def test_kalshi_fetch_market_result_accepts_legacy_settled_status():
+    connector = KalshiConnector()
+    connector.http_client.session.get = lambda *a, **k: _FakeResponse(  # type: ignore[method-assign]
+        {"market": {"status": "settled", "result": "void"}}
+    )
+    assert connector.fetch_market_result("KXTEST") == "void"
