@@ -404,7 +404,14 @@ class Storage:
                 # fair_mid is used as YES fallback when bid is 0 (e.g. near-certain contracts
                 # whose YES side is so likely that nobody posts a bid, but last_trade is still
                 # meaningful). Without this, these positions are never re-marked.
-                fair_mid = float(mark.mark_price) if mark.mark_price is not None else None
+                # Only trust that fallback when the quote assessment marked it reliable —
+                # empty/broken books often still carry a synthetic snapshot mid (0.50)
+                # that must not overwrite open marks or refresh last_mark_time_utc.
+                fair_mid = (
+                    float(mark.mark_price)
+                    if mark.quote_reliable and mark.mark_price is not None
+                    else None
+                )
                 rows = self.con.execute(
                     """
                     UPDATE paper_positions
@@ -461,7 +468,7 @@ class Storage:
                         fair_mid,                     # NULL direction
                     ],
                 ).fetchall()
-            else:
+            elif mark.quote_reliable and mark.mark_price is not None:
                 rows = self.con.execute(
                     """
                     UPDATE paper_positions
@@ -487,6 +494,9 @@ class Storage:
                         mark.venue,
                     ],
                 ).fetchall()
+            else:
+                # No executable bid/ask and an unreliable/missing mid — keep prior mark.
+                rows = []
             updated += len(rows)
         return updated
 

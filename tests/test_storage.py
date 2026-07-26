@@ -225,6 +225,72 @@ def test_get_open_positions_includes_direction(tmp_path: Path) -> None:
     assert result[0].direction == "yes"
 
 
+def test_unreliable_bid_ask_mark_does_not_fallback_to_snapshot_mid(tmp_path: Path) -> None:
+    """Empty-book synthetic mids must not overwrite long-YES marks/PnL.
+
+    Pipeline Phase 1 still attaches snapshot mid (often 0.50) when fair_yes_mid is
+    missing, but sets quote_reliable=False. Storage must ignore that fallback.
+    """
+    st = Storage(tmp_path / "t.duckdb")
+    pos = _open_position(
+        position_id="pos-yes-empty-book",
+        avg_entry_price=0.10,
+        net_qty=100.0,
+    ).model_copy(update={"direction": "yes", "mark_price": 0.10, "unrealized_pnl": 0.0})
+    st.insert_positions([pos])
+
+    mark = PositionMark(
+        contract_id="CPI-TEST",
+        venue="KALSHI",
+        mark_price=0.50,  # synthetic empty-book mid from snapshot fallback
+        yes_bid=0.0,
+        yes_ask=1.0,
+        quote_reliable=False,
+    )
+    updated = st.mark_open_positions([mark])
+    row = st.con.execute(
+        "SELECT mark_price, unrealized_pnl FROM paper_positions WHERE position_id = ?",
+        [pos.position_id],
+    ).fetchone()
+    st.close()
+
+    assert updated == 0
+    assert row is not None
+    assert abs(row[0] - 0.10) < 1e-9
+    assert abs(row[1] - 0.0) < 1e-9
+
+
+def test_reliable_fair_mid_still_marks_long_yes_when_bid_missing(tmp_path: Path) -> None:
+    """Near-certain YES books with a reliable last-trade mid may still re-mark."""
+    st = Storage(tmp_path / "t.duckdb")
+    pos = _open_position(
+        position_id="pos-yes-near-certain",
+        avg_entry_price=0.90,
+        net_qty=10.0,
+    ).model_copy(update={"direction": "yes", "mark_price": 0.90, "unrealized_pnl": 0.0})
+    st.insert_positions([pos])
+
+    mark = PositionMark(
+        contract_id="CPI-TEST",
+        venue="KALSHI",
+        mark_price=0.97,
+        yes_bid=0.0,
+        yes_ask=0.98,
+        quote_reliable=True,
+    )
+    updated = st.mark_open_positions([mark])
+    row = st.con.execute(
+        "SELECT mark_price, unrealized_pnl FROM paper_positions WHERE position_id = ?",
+        [pos.position_id],
+    ).fetchone()
+    st.close()
+
+    assert updated == 1
+    assert row is not None
+    assert abs(row[0] - 0.97) < 1e-9
+    assert abs(row[1] - 0.70) < 1e-9
+
+
 def test_mark_updates_last_mark_time(tmp_path: Path) -> None:
     """last_mark_time_utc is updated to the mark's timestamp."""
     st = Storage(tmp_path / "t.duckdb")
