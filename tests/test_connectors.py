@@ -52,6 +52,20 @@ def test_kalshi_normalization_cpi():
     assert row["contract_type"] == "cpi"
     # _parse_threshold now extracts the threshold from the OVER-{value} format.
     assert row["threshold"] == pytest.approx(0.3)
+    # Missing last_price must stay None — do not invent (bid+ask)/2.
+    assert row["last_trade"] is None
+
+
+def test_kalshi_normalization_preserves_absent_last_trade():
+    """Empty/one-sided books without a last trade must not synthesize a mid."""
+    connector = KalshiConnector()
+    row = connector._normalize_market(
+        {"ticker": "KXU3-EMPTY", "title": "Empty", "yes_bid": 0, "yes_ask": 100},
+        series_ticker="KXU3",
+    )
+    assert row["best_bid"] == 0.0
+    assert row["best_ask"] == 1.0
+    assert row["last_trade"] is None
 
 
 def test_kalshi_normalization_preserves_zero_dollar_prices():
