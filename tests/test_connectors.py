@@ -171,23 +171,33 @@ def _stub_market_get(connector: KalshiConnector, payload: dict, status_code: int
     )
 
 
-def test_kalshi_fetch_market_result_determined_yes():
-    """Current Kalshi API uses status=determined (not legacy 'settled')."""
+def test_kalshi_fetch_market_result_requires_finalized_status():
+    """Pending closed markets must not be treated as settled even if result is set."""
     connector = KalshiConnector()
     _stub_market_get(
         connector,
-        {"market": {"ticker": "KXCPI-26JUL-T0.3", "status": "determined", "result": "yes"}},
+        {"market": {"ticker": "KXTEST", "status": "closed", "result": "yes"}},
+    )
+    assert connector.fetch_market_result("KXTEST") is None
+
+
+def test_kalshi_fetch_market_result_rejects_determined_status():
+    """Determined results can still be disputed — wait for finalized payout."""
+    connector = KalshiConnector()
+    _stub_market_get(
+        connector,
+        {"market": {"ticker": "KXTEST", "status": "determined", "result": "no"}},
+    )
+    assert connector.fetch_market_result("KXTEST") is None
+
+
+def test_kalshi_fetch_market_result_finalized_yes():
+    connector = KalshiConnector()
+    _stub_market_get(
+        connector,
+        {"market": {"ticker": "KXCPI-26JUL-T0.3", "status": "finalized", "result": "YES"}},
     )
     assert connector.fetch_market_result("KXCPI-26JUL-T0.3") == "yes"
-
-
-def test_kalshi_fetch_market_result_finalized_no():
-    connector = KalshiConnector()
-    _stub_market_get(
-        connector,
-        {"market": {"ticker": "KXCPI-26JUL-T0.3", "status": "finalized", "result": "NO"}},
-    )
-    assert connector.fetch_market_result("KXCPI-26JUL-T0.3") == "no"
 
 
 def test_kalshi_fetch_market_result_empty_string_is_unresolved():
@@ -195,7 +205,7 @@ def test_kalshi_fetch_market_result_empty_string_is_unresolved():
     connector = KalshiConnector()
     _stub_market_get(
         connector,
-        {"market": {"ticker": "KXCPI-26JUL-T0.3", "status": "closed", "result": ""}},
+        {"market": {"ticker": "KXCPI-26JUL-T0.3", "status": "finalized", "result": ""}},
     )
     assert connector.fetch_market_result("KXCPI-26JUL-T0.3") is None
 
@@ -204,7 +214,7 @@ def test_kalshi_fetch_market_result_scalar_is_unresolved():
     connector = KalshiConnector()
     _stub_market_get(
         connector,
-        {"market": {"ticker": "KX-SCALAR", "status": "determined", "result": "scalar"}},
+        {"market": {"ticker": "KX-SCALAR", "status": "finalized", "result": "scalar"}},
     )
     assert connector.fetch_market_result("KX-SCALAR") is None
 

@@ -350,34 +350,27 @@ class KalshiConnector(Connector):
         Return the settlement result for a specific Kalshi contract ticker.
 
         Calls ``GET /trade-api/v2/markets/{ticker}`` — this endpoint returns
-        data for *any* market status (open, closed, or settled), unlike the
+        data for *any* market status (open, closed, or finalized), unlike the
         list endpoint which is filtered by the caller.
+
+        Only ``finalized`` / ``settled`` markets are treated as definitive.
+        Kalshi REST uses ``finalized`` for paid-out markets; the list filter
+        value ``settled`` maps to that same terminal state. Pending statuses
+        such as ``closed`` (trading ended, outcome pending) or ``determined``
+        (result may still be disputed) intentionally return None.
 
         Returns:
             "yes"  — the YES leg won (YES contract pays $1, NO pays $0)
             "no"   — the NO leg won  (NO contract pays $1, YES pays $0)
-            "void" — contract voided; both sides refunded at $0.50
+            "void" — contract voided; both sides refunded
             None   — market not yet settled, API unavailable, or unknown result
 
         The result is intentionally lowercased for safe equality comparisons
         downstream regardless of how Kalshi capitalises it in the response.
 
         Kalshi Market.result is documented as ``yes`` | ``no`` | ``scalar`` | ``""``.
-        Empty string means the outcome is not determined yet — callers must treat
-        that as unresolved (None), never as a losing settlement. Status values on
-        the current Trade API include ``determined`` / ``finalized`` (not only the
-        legacy ``settled`` label).
+        Empty string / scalar must never be treated as a binary payout.
         """
-        # Binary outcomes we know how to mark-to-settlement. ``scalar`` and ``""``
-        # are valid Kalshi result values but are not actionable here.
-        _RESOLVED = frozenset({"yes", "no", "void"})
-        # Statuses where a filled result may be trusted. ``closed`` is included
-        # because some payloads set result while status is still closed; ``""``
-        # results are still rejected via _RESOLVED below.
-        _SETTLEMENT_STATUSES = frozenset(
-            {"closed", "settled", "determined", "finalized", "amended"}
-        )
-
         path = f"/trade-api/v2/markets/{ticker}"
         headers = self._auth_headers(method="GET", path=path)
         try:
@@ -400,19 +393,22 @@ class KalshiConnector(Connector):
             data = response.json()
             market = data.get("market") or data  # v2 wraps in {"market": {...}}
             status = str(market.get("status", "")).lower()
-            if status not in _SETTLEMENT_STATUSES:
+            # REST terminal state is "finalized"; keep "settled" for older payloads.
+            if status not in {"settled", "finalized"}:
                 return None
-            # Do not use ``x or y`` — Kalshi uses "" for undetermined results, and
-            # ``"" or None`` would incorrectly collapse to the fallback / None path
-            # in a way that previously allowed ``str("").lower()`` to leak through
-            # when both fields were empty strings.
+            # Prefer explicit empty checks — Kalshi uses "" for undetermined results.
             raw = market.get("result")
             if raw is None or raw == "":
                 raw = market.get("resolution")
             if raw is None or raw == "":
                 return None
             normalized = str(raw).strip().lower()
-            if normalized not in _RESOLVED:
+            if normalized not in {"yes", "no", "void"}:
+                LOGGER.warning(
+                    "Kalshi market %s has unsupported settlement result %r",
+                    ticker,
+                    raw,
+                )
                 return None
             return normalized
         except Exception as exc:
