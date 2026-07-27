@@ -3,6 +3,7 @@ Unit tests for Storage.mark_open_positions (Phase 1),
 Storage.close_positions / Storage.get_open_positions (Phase 2), and
 Storage.get_open_position / Storage.add_to_position (Phase 3).
 """
+from datetime import timedelta
 from pathlib import Path
 
 import duckdb
@@ -223,6 +224,57 @@ def test_get_open_positions_includes_direction(tmp_path: Path) -> None:
     st.close()
 
     assert result[0].direction == "yes"
+
+
+def test_close_stale_positions_can_be_scoped_to_position_ids(tmp_path: Path) -> None:
+    """A scoped stale sweep must not close other stale open positions."""
+    st = Storage(tmp_path / "t.duckdb")
+    old_mark = utc_now() - timedelta(hours=200)
+    kalshi_pos = _open_position(
+        position_id="kalshi-unresolved",
+        contract_id="KXCPI-TEST",
+        venue="kalshi",
+        avg_entry_price=0.20,
+        net_qty=10.0,
+    ).model_copy(
+        update={
+            "last_mark_time_utc": old_mark,
+            "unrealized_pnl": -1.0,
+            "mark_price": 0.10,
+            "direction": "yes",
+        }
+    )
+    fallback_pos = _open_position(
+        position_id="fallback-stale",
+        contract_id="POLY-TEST",
+        venue="polymarket",
+        avg_entry_price=0.40,
+        net_qty=5.0,
+    ).model_copy(
+        update={
+            "last_mark_time_utc": old_mark,
+            "unrealized_pnl": 2.0,
+            "mark_price": 0.80,
+            "direction": "yes",
+        }
+    )
+    st.insert_positions([kalshi_pos, fallback_pos])
+
+    closed = st.close_stale_positions(168.0, position_ids=["fallback-stale"])
+    st.close()
+
+    assert closed == 1
+    con = duckdb.connect(str(tmp_path / "t.duckdb"))
+    rows = {
+        r[0]: (r[1], r[2])
+        for r in con.execute(
+            "SELECT position_id, status, close_reason FROM paper_positions"
+        ).fetchall()
+    }
+    con.close()
+
+    assert rows["kalshi-unresolved"] == ("open", None)
+    assert rows["fallback-stale"] == ("closed", "stale_no_market")
 
 
 def test_mark_updates_last_mark_time(tmp_path: Path) -> None:
