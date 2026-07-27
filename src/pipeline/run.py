@@ -119,7 +119,10 @@ def run_pipeline(thesis_name: str = "economic_indicators") -> tuple[str, Path | 
 
                 for pos in stale_positions:
                     result = contract_results.get(pos.contract_id)
-                    if result is None:
+                    # Only binary yes/no/void outcomes are safe to mark-to-settlement.
+                    # Unknown values must not fall through to the "else → 0.0" branch
+                    # (that previously treated "" / "scalar" as a total loss).
+                    if result not in {"yes", "no", "void"}:
                         continue  # not settled yet — falls through to stale_no_market
 
                     # Compute direction-aware exit price.

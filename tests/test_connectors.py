@@ -155,6 +155,78 @@ def test_kalshi_parse_markets_fixture():
     assert rows[0]["contract_id"] == "CPI-MAY-OVER-03"
 
 
+class _FakeResponse:
+    def __init__(self, status_code: int, payload: dict):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = json.dumps(payload)
+
+    def json(self):
+        return self._payload
+
+
+def _stub_market_get(connector: KalshiConnector, payload: dict, status_code: int = 200):
+    connector.http_client.session.get = (  # type: ignore[method-assign]
+        lambda *args, **kwargs: _FakeResponse(status_code, payload)
+    )
+
+
+def test_kalshi_fetch_market_result_determined_yes():
+    """Current Kalshi API uses status=determined (not legacy 'settled')."""
+    connector = KalshiConnector()
+    _stub_market_get(
+        connector,
+        {"market": {"ticker": "KXCPI-26JUL-T0.3", "status": "determined", "result": "yes"}},
+    )
+    assert connector.fetch_market_result("KXCPI-26JUL-T0.3") == "yes"
+
+
+def test_kalshi_fetch_market_result_finalized_no():
+    connector = KalshiConnector()
+    _stub_market_get(
+        connector,
+        {"market": {"ticker": "KXCPI-26JUL-T0.3", "status": "finalized", "result": "NO"}},
+    )
+    assert connector.fetch_market_result("KXCPI-26JUL-T0.3") == "no"
+
+
+def test_kalshi_fetch_market_result_empty_string_is_unresolved():
+    """Kalshi documents result='' for undetermined markets — must not settle at $0."""
+    connector = KalshiConnector()
+    _stub_market_get(
+        connector,
+        {"market": {"ticker": "KXCPI-26JUL-T0.3", "status": "closed", "result": ""}},
+    )
+    assert connector.fetch_market_result("KXCPI-26JUL-T0.3") is None
+
+
+def test_kalshi_fetch_market_result_scalar_is_unresolved():
+    connector = KalshiConnector()
+    _stub_market_get(
+        connector,
+        {"market": {"ticker": "KX-SCALAR", "status": "determined", "result": "scalar"}},
+    )
+    assert connector.fetch_market_result("KX-SCALAR") is None
+
+
+def test_kalshi_fetch_market_result_active_ignored():
+    connector = KalshiConnector()
+    _stub_market_get(
+        connector,
+        {"market": {"ticker": "KXCPI-26JUL-T0.3", "status": "active", "result": "yes"}},
+    )
+    assert connector.fetch_market_result("KXCPI-26JUL-T0.3") is None
+
+
+def test_kalshi_fetch_market_result_legacy_settled_still_works():
+    connector = KalshiConnector()
+    _stub_market_get(
+        connector,
+        {"market": {"ticker": "KXCPI-26JUL-T0.3", "status": "settled", "result": "void"}},
+    )
+    assert connector.fetch_market_result("KXCPI-26JUL-T0.3") == "void"
+
+
 def test_polymarket_parse_markets_fixture():
     connector = PolymarketConnector()
     rows = connector.parse_markets(_load_json("polymarket_markets.json"))

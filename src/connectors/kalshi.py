@@ -361,7 +361,23 @@ class KalshiConnector(Connector):
 
         The result is intentionally lowercased for safe equality comparisons
         downstream regardless of how Kalshi capitalises it in the response.
+
+        Kalshi Market.result is documented as ``yes`` | ``no`` | ``scalar`` | ``""``.
+        Empty string means the outcome is not determined yet — callers must treat
+        that as unresolved (None), never as a losing settlement. Status values on
+        the current Trade API include ``determined`` / ``finalized`` (not only the
+        legacy ``settled`` label).
         """
+        # Binary outcomes we know how to mark-to-settlement. ``scalar`` and ``""``
+        # are valid Kalshi result values but are not actionable here.
+        _RESOLVED = frozenset({"yes", "no", "void"})
+        # Statuses where a filled result may be trusted. ``closed`` is included
+        # because some payloads set result while status is still closed; ``""``
+        # results are still rejected via _RESOLVED below.
+        _SETTLEMENT_STATUSES = frozenset(
+            {"closed", "settled", "determined", "finalized", "amended"}
+        )
+
         path = f"/trade-api/v2/markets/{ticker}"
         headers = self._auth_headers(method="GET", path=path)
         try:
@@ -384,12 +400,21 @@ class KalshiConnector(Connector):
             data = response.json()
             market = data.get("market") or data  # v2 wraps in {"market": {...}}
             status = str(market.get("status", "")).lower()
-            if status not in {"settled", "closed"}:
+            if status not in _SETTLEMENT_STATUSES:
                 return None
-            result = market.get("result") or market.get("resolution")
-            if result is None:
+            # Do not use ``x or y`` — Kalshi uses "" for undetermined results, and
+            # ``"" or None`` would incorrectly collapse to the fallback / None path
+            # in a way that previously allowed ``str("").lower()`` to leak through
+            # when both fields were empty strings.
+            raw = market.get("result")
+            if raw is None or raw == "":
+                raw = market.get("resolution")
+            if raw is None or raw == "":
                 return None
-            return str(result).lower()
+            normalized = str(raw).strip().lower()
+            if normalized not in _RESOLVED:
+                return None
+            return normalized
         except Exception as exc:
             LOGGER.warning("Kalshi fetch_market_result(%s) failed: %s", ticker, exc)
             return None
