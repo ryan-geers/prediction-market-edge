@@ -400,7 +400,13 @@ class Storage:
             if mark.yes_bid is not None and mark.yes_ask is not None:
                 yes_bid = float(mark.yes_bid)
                 yes_ask = float(mark.yes_ask)
-                broken_no_book = yes_bid <= 0 and yes_ask >= 0.999
+                # Empty ask (Kalshi often sends 0), crossed books, or classic
+                # bid=0/ask≈1 empty books must not re-mark long NO at 1 - ask.
+                broken_no_book = (
+                    (yes_bid <= 0 and yes_ask >= 0.999)
+                    or yes_ask < min_bid
+                    or yes_ask <= yes_bid
+                )
                 # fair_mid is used as YES fallback when bid is 0 (e.g. near-certain contracts
                 # whose YES side is so likely that nobody posts a bid, but last_trade is still
                 # meaningful). Without this, these positions are never re-marked.

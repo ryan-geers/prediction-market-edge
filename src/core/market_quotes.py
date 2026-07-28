@@ -195,6 +195,25 @@ def assess_yes_quote(
             yes_ask_for_exit=ask,
         )
 
+    # Bid-only or crossed book: missing/too-small YES ask, or ask <= bid.
+    # Kalshi often reports yes_ask=0 when nobody is offering YES. Treating that
+    # ask as real marks long NO at 1 - 0 = $1 and allows exits at a full win.
+    if ask < min_ask or ask <= bid:
+        lt_mid = _last_trade_mid()
+        yes_exit_ok = bid >= min_bid
+        return YesQuoteAssessment(
+            best_bid=bid,
+            best_ask=ask,
+            fair_yes_mid=lt_mid,
+            spread_bps=sp,
+            quality="unusable_bid_only" if ask < min_ask else "unusable_crossed",
+            is_signal_quality=False,
+            # Long YES may still sell into the bid; long NO has no executable ask.
+            is_exit_quality=yes_exit_ok,
+            yes_bid_for_exit=bid if yes_exit_ok else 0.0,
+            yes_ask_for_exit=ask,
+        )
+
     lt_mid = _last_trade_mid()
     if lt_mid is not None:
         exit_ok = bid >= min_bid
@@ -235,6 +254,12 @@ def mark_yes_for_direction(assessment: YesQuoteAssessment, direction: str | None
             return None
         return assessment.yes_bid_for_exit
     if direction == "no":
+        # Long NO marks from YES ask; reject empty ask (0), crossed books, and
+        # the classic empty-book ask≈1 with no bid.
+        if assessment.best_ask <= assessment.best_bid:
+            return None
+        if assessment.best_ask < 0.01:
+            return None
         if assessment.best_ask >= 1.0 - 1e-9 and assessment.yes_bid_for_exit <= 0:
             return None
         return assessment.yes_ask_for_exit
@@ -251,7 +276,12 @@ def executable_yes_exit_price(
             return None
         return assessment.yes_bid_for_exit
     if direction == "no":
-        # NO exit mark in position price space: 1 - yes_ask
+        # NO exit mark in position price space: 1 - yes_ask.
+        # Require a real YES offer above the bid; ask=0 would price NO at $1.
+        if assessment.best_ask <= assessment.best_bid:
+            return None
+        if assessment.best_ask < 0.01:
+            return None
         if assessment.best_ask >= 1.0 - 1e-9 and assessment.yes_bid_for_exit <= 0:
             return None
         return 1.0 - assessment.yes_ask_for_exit
