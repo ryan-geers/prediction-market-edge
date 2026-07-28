@@ -77,3 +77,20 @@ def test_executable_yes_exit_uses_bid():
     qa = assess_yes_quote(0.48, 0.52, None, _settings())
     assert executable_yes_exit_price(qa, "yes") == 0.48
     assert executable_yes_exit_price(qa, "no") == 0.48  # 1 - 0.52
+
+
+def test_bid_only_ask_zero_is_unusable_for_no():
+    """Kalshi-style bid-only book (ask=0) must not price long NO at $1."""
+    qa = assess_yes_quote(0.55, 0.0, 0.50, _settings())
+    assert qa.quality == "unusable_bid_only"
+    assert not qa.is_signal_quality
+    assert qa.is_exit_quality  # YES can still sell into the bid
+    assert executable_yes_exit_price(qa, "yes") == 0.55
+    assert executable_yes_exit_price(qa, "no") is None
+
+
+def test_crossed_book_is_unusable_for_no():
+    qa = assess_yes_quote(0.60, 0.40, 0.50, _settings())
+    assert qa.quality == "unusable_crossed"
+    assert not qa.is_signal_quality
+    assert executable_yes_exit_price(qa, "no") is None

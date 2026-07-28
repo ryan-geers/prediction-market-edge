@@ -331,3 +331,34 @@ def test_add_to_position_returns_false_for_unknown_id(tmp_path: Path) -> None:
     result = st.add_to_position(op)
     st.close()
     assert result is False
+
+
+def test_mark_skips_long_no_when_yes_ask_is_missing(tmp_path: Path) -> None:
+    """Bid-only books (yes_ask=0) must not re-mark long NO at 1 - 0 = $1."""
+    st = Storage(tmp_path / "t.duckdb")
+    pos = _open_position(avg_entry_price=0.40, net_qty=50.0)
+    pos = pos.model_copy(
+        update={
+            "direction": "no",
+            "mark_price": 0.60,
+            "unrealized_pnl": 0.0,
+        }
+    )
+    st.insert_positions([pos])
+
+    mark = PositionMark(
+        contract_id="CPI-TEST",
+        venue="KALSHI",
+        mark_price=0.50,
+        yes_bid=0.55,
+        yes_ask=0.0,
+        quote_reliable=True,
+    )
+    updated = st.mark_open_positions([mark])
+    open_rows = st.get_open_positions()
+    st.close()
+
+    assert updated == 0
+    assert len(open_rows) == 1
+    assert abs(open_rows[0].mark_price - 0.60) < 1e-9
+    assert abs(open_rows[0].unrealized_pnl - 0.0) < 1e-9
