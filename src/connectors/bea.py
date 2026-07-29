@@ -21,7 +21,9 @@ class BeaConnector(Connector):
             "UserID": self.api_key,
             "method": "GetData",
             "datasetname": "NIPA",
-            "TableName": "T20805",
+            # T20804 = Table 2.8.4 Price Indexes for PCE (chain-type index levels).
+            # T20805 is current-dollar PCE in billions — not a price index.
+            "TableName": "T20804",
             "LineNumber": "1",
             "Frequency": "M",
             "Year": "X",
@@ -90,7 +92,8 @@ class BeaConnector(Connector):
             "UserID": self.api_key,
             "method": "GetData",
             "datasetname": "NIPA",
-            "TableName": "T20805",
+            # T20804 = PCE price indexes; T20805 is current-dollar PCE levels.
+            "TableName": "T20804",
             "LineNumber": "1",
             "Frequency": "M",
             "Year": "X",

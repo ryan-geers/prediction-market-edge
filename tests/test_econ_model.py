@@ -1,3 +1,5 @@
+import pytest
+
 from src.theses.economic_indicators.model import (
     build_training_frame,
     build_training_frame_from_history,
@@ -98,3 +100,56 @@ def test_mom_to_probability_monotonic():
     p_low = mom_percent_to_yes_probability(0.1, threshold_pct=0.3, scale=12.0)
     p_high = mom_percent_to_yes_probability(0.5, threshold_pct=0.3, scale=12.0)
     assert 0.01 <= p_low < p_high <= 0.99
+
+
+def test_live_prediction_uses_latest_unlabeled_feature_row():
+    """Next-month CPI forecast must use the newest feature month, not the last labeled row.
+
+    Concrete trigger: history through Dec with CPI levels known through Dec.
+    After shift(-1), Dec has no next-month label. Pre-fix code dropped Dec and
+    predicted from Nov features (already-realized Dec m/m). Post-fix predicts
+    from Dec features for the still-unknown Jan m/m.
+    """
+    from src.theses.economic_indicators import model
+
+    history: list[dict] = []
+    for m in range(1, 13):
+        d = f"2025-{m:02d}-01"
+        # Distinct Dec features so a lag would change the OLS input vector.
+        ppi = 240.0 + m
+        pce = 120.0 + m * 0.1
+        unrate = 4.0 if m < 12 else 5.5
+        cpi = 300.0 + m * 0.3
+        history.extend(
+            [
+                {"series": "PPIACO", "value": ppi, "date": d},
+                {"series": "PCEPI", "value": pce, "date": d},
+                {"series": "UNRATE", "value": unrate, "date": d},
+                {"series": model.CPI_SERIES_FRED, "value": cpi, "date": d},
+            ]
+        )
+
+    frame = build_training_frame_from_history(
+        history, {"PPIACO": 252.0, "PCEPI": 121.2, "UNRATE": 5.5}
+    )
+    assert frame["cpi_mom_next"].isna().iloc[-1]
+    assert float(frame.iloc[-1]["unrate"]) == pytest.approx(5.5)
+    assert float(frame.dropna(subset=["cpi_mom_next"]).iloc[-1]["unrate"]) == pytest.approx(4.0)
+
+    result = train_validate_predict(frame)
+    # Reconstruct coefficients on labeled rows and confirm prediction matches Dec features.
+    import numpy as np
+
+    labeled = frame.dropna(subset=["cpi_mom_next"]).sort_values("release_date")
+    X = labeled[["ppi", "pcepi", "unrate"]].to_numpy(dtype=float)
+    y = labeled["cpi_mom_next"].to_numpy(dtype=float)
+    n = len(labeled)
+    split_idx = max(8, int(n * 0.8))
+    split_idx = min(split_idx, n - 1)
+    coef, _, _, _ = np.linalg.lstsq(np.c_[np.ones(split_idx), X[:split_idx]], y[:split_idx], rcond=None)
+    latest = frame.sort_values("release_date").iloc[-1][["ppi", "pcepi", "unrate"]].to_numpy(dtype=float)
+    lagged = labeled.iloc[-1][["ppi", "pcepi", "unrate"]].to_numpy(dtype=float)
+    expected_latest = float(np.r_[1.0, latest] @ coef)
+    expected_lagged = float(np.r_[1.0, lagged] @ coef)
+    assert result.prediction == pytest.approx(expected_latest)
+    assert expected_latest != pytest.approx(expected_lagged)

@@ -77,6 +77,39 @@ def test_model_produces_sensible_prediction():
     assert result.training_start < result.training_end
 
 
+def test_unemployment_prediction_uses_latest_unlabeled_feature_row():
+    """Live UNRATE forecast must use the newest AR feature row, not the last labeled month."""
+    import numpy as np
+
+    # 30 months ending with a sharp spike so lagged vs latest features diverge.
+    history = []
+    for i in range(30):
+        year = 2024 + (i // 12)
+        month = (i % 12) + 1
+        value = 4.0 + 0.01 * i
+        if i == 29:
+            value = 6.5  # latest month — only usable as features, not as a realized target
+        history.append({"series": "UNRATE", "value": value, "date": f"{year}-{month:02d}-01"})
+
+    df = build_unemployment_training_frame(history)
+    assert df["unrate_next"].isna().iloc[-1]
+    assert float(df.iloc[-1]["unrate_t"]) == pytest.approx(6.5)
+
+    result = train_validate_predict_unemployment(df)
+    labeled = df.dropna(subset=["unrate_next"]).sort_values("release_date")
+    feature_cols = ["unrate_t", "unrate_lag1", "unrate_lag2", "unrate_lag3", "trend_3m"]
+    X = labeled[feature_cols].to_numpy(dtype=float)
+    y = labeled["unrate_next"].to_numpy(dtype=float)
+    n = len(labeled)
+    split_idx = max(12, int(n * 0.8))
+    split_idx = min(split_idx, n - 1)
+    coef, _, _, _ = np.linalg.lstsq(np.c_[np.ones(split_idx), X[:split_idx]], y[:split_idx], rcond=None)
+    latest = df.sort_values("release_date").iloc[-1][feature_cols].to_numpy(dtype=float)
+    lagged = labeled.iloc[-1][feature_cols].to_numpy(dtype=float)
+    assert result.prediction == pytest.approx(float(np.r_[1.0, latest] @ coef))
+    assert float(np.r_[1.0, latest] @ coef) != pytest.approx(float(np.r_[1.0, lagged] @ coef))
+
+
 def test_model_healthy_flag_set_on_valid_data():
     history = _make_history(48)
     df = build_unemployment_training_frame(history)

@@ -36,6 +36,26 @@ def test_bea_fallback_without_api_key():
     assert rows[0]["series"] == "PCEPI"
 
 
+def test_bea_requests_pce_price_index_table():
+    """PCEPI must come from NIPA T20804 (price indexes), not T20805 (current-dollar PCE)."""
+    connector = BeaConnector(api_key="test-key")
+    captured: dict = {}
+
+    def _capture(url, params=None):  # noqa: ARG001
+        captured.update(params or {})
+        raise RuntimeError("stop after capture")
+
+    connector.http_client.get_json = _capture  # type: ignore[method-assign]
+    rows = connector.fetch()
+    assert captured.get("TableName") == "T20804"
+    assert rows[0]["series"] == "PCEPI"  # fallback after forced failure
+
+    captured.clear()
+    history = connector.fetch_history()
+    assert captured.get("TableName") == "T20804"
+    assert history  # fallback history on failure
+
+
 def test_kalshi_normalization():
     connector = KalshiConnector()
     row = connector._normalize_market({"ticker": "KXU3-26MAY-T4.8", "title": "X", "yes_bid": 40, "yes_ask": 45, "last_price": 43}, series_ticker="KXU3")

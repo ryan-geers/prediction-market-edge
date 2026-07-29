@@ -94,6 +94,9 @@ def build_unemployment_training_frame(
     return _build_synthetic_frame(fallback_unrate)
 
 
+_FEATURE_COLS = ["unrate_t", "unrate_lag1", "unrate_lag2", "unrate_lag3", "trend_3m"]
+
+
 def _build_ar_frame(monthly: pd.Series) -> pd.DataFrame:
     df = pd.DataFrame({"unrate_t": monthly})
     df["unrate_lag1"] = df["unrate_t"].shift(1)
@@ -101,7 +104,9 @@ def _build_ar_frame(monthly: pd.Series) -> pd.DataFrame:
     df["unrate_lag3"] = df["unrate_t"].shift(3)
     df["trend_3m"] = df["unrate_t"].diff(3)          # 3-month change as trend signal
     df["unrate_next"] = df["unrate_t"].shift(-1)      # one-month-ahead target
-    df = df.dropna()
+    # Keep the newest feature month even when next-month UNRATE is unknown.
+    # Training drops unlabeled rows; live prediction uses that latest feature vector.
+    df = df.dropna(subset=_FEATURE_COLS)
     df = df.reset_index().rename(columns={"date": "release_date"})
     return df[["release_date", "unrate_t", "unrate_lag1", "unrate_lag2", "unrate_lag3", "trend_3m", "unrate_next"]]
 
@@ -133,9 +138,6 @@ def _build_synthetic_frame(base_unrate: float, periods: int = 48) -> pd.DataFram
     return pd.DataFrame(rows)
 
 
-_FEATURE_COLS = ["unrate_t", "unrate_lag1", "unrate_lag2", "unrate_lag3", "trend_3m"]
-
-
 def train_validate_predict_unemployment(
     df: pd.DataFrame,
     val_fraction: float = 0.2,
@@ -145,12 +147,16 @@ def train_validate_predict_unemployment(
     Time-ordered OLS on AR features → next-month UNRATE level.
 
     Mirrors the structure of `train_validate_predict` in model.py so the
-    two models are consistently evaluated.
+    two models are consistently evaluated. Live prediction uses the newest
+    feature row (which may lack ``unrate_next`` when that month is not yet known).
     """
     d = df.sort_values("release_date").reset_index(drop=True)
-    y = d["unrate_next"].to_numpy(dtype=float)
-    X = d[_FEATURE_COLS].to_numpy(dtype=float)
-    n = len(d)
+    latest = d[_FEATURE_COLS].iloc[-1].to_numpy(dtype=float)
+
+    labeled = d.dropna(subset=["unrate_next"]).reset_index(drop=True)
+    y = labeled["unrate_next"].to_numpy(dtype=float)
+    X = labeled[_FEATURE_COLS].to_numpy(dtype=float)
+    n = len(labeled)
 
     if n < min_train_rows + 2:
         raise ValueError(f"Insufficient rows for unemployment model validation (n={n})")
@@ -199,15 +205,15 @@ def train_validate_predict_unemployment(
     else:
         wf_rmse, wf_mae = rmse, mae
 
-    latest_design = np.r_[1.0, X[-1]]
+    latest_design = np.r_[1.0, latest]
     prediction = float(latest_design @ coef)
 
     model_healthy = rmse >= 1e-6 and 1.0 <= prediction <= 15.0
 
-    ts0 = pd.Timestamp(d["release_date"].iloc[0]).to_pydatetime()
+    ts0 = pd.Timestamp(labeled["release_date"].iloc[0]).to_pydatetime()
     if ts0.tzinfo is None:
         ts0 = ts0.replace(tzinfo=timezone.utc)
-    ts1 = pd.Timestamp(d["release_date"].iloc[split_idx - 1]).to_pydatetime()
+    ts1 = pd.Timestamp(labeled["release_date"].iloc[split_idx - 1]).to_pydatetime()
     if ts1.tzinfo is None:
         ts1 = ts1.replace(tzinfo=timezone.utc)
 
