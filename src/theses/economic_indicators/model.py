@@ -128,12 +128,15 @@ def build_training_frame_from_history(
         cpi_mom_next = (cpi.shift(-1) / cpi - 1.0) * 100.0
         train = pivot[feature_cols].copy()
         train["cpi_mom_next"] = cpi_mom_next
-        train = train.dropna()
+        # Keep the newest feature month even when next-month CPI is unknown (NaN
+        # target). Training drops unlabeled rows; live prediction uses that latest
+        # feature vector so the forecast is truly one month ahead.
+        train = train.dropna(subset=feature_cols)
         train = train.rename(
             columns={"PPIACO": "ppi", "PCEPI": "pcepi", "UNRATE": "unrate"}
         )
         train = train.reset_index().rename(columns={"date": "release_date"})
-        if len(train) < 8:
+        if int(train["cpi_mom_next"].notna().sum()) < 8:
             return build_training_frame(fallback_macro)  # type: ignore[arg-type]
         return train[["release_date", "ppi", "pcepi", "unrate", "cpi_mom_next"]].sort_values("release_date")
 
@@ -149,10 +152,10 @@ def build_training_frame_from_history(
     train = pivot[feature_cols].copy()
     proxy = (0.16 * (train["PPIACO"] / 100) + 0.27 * (train["PCEPI"] / 100) - 0.04 * train["UNRATE"] + 0.22)
     train["cpi_mom_next"] = (proxy * 0.45 + 0.08).shift(-1)
-    train = train.dropna()
+    train = train.dropna(subset=feature_cols)
     train = train.rename(columns={"PPIACO": "ppi", "PCEPI": "pcepi", "UNRATE": "unrate"})
     train = train.reset_index().rename(columns={"date": "release_date"})
-    if len(train) < 8:
+    if int(train["cpi_mom_next"].notna().sum()) < 8:
         return build_training_frame(fallback_macro)  # type: ignore[arg-type]
     return train[["release_date", "ppi", "pcepi", "unrate", "cpi_mom_next"]].sort_values("release_date")
 
@@ -163,13 +166,20 @@ def train_validate_predict(
     min_train_rows: int = 8,
 ) -> RegressionResult:
     """
-    Time-ordered OLS; last `val_fraction` rows are validation. Prediction uses latest feature row.
+    Time-ordered OLS; last `val_fraction` labeled rows are validation.
+    Live prediction uses the chronologically latest feature row (which may lack a
+    target when next-month CPI is not yet released).
     Adds train-set metrics and a small walk-forward on validation rows (re-fit on expanding history).
     """
+    feature_cols = ["ppi", "pcepi", "unrate"]
     d = df.sort_values("release_date").reset_index(drop=True)
-    y = d["cpi_mom_next"].to_numpy(dtype=float)
-    X = d[["ppi", "pcepi", "unrate"]].to_numpy(dtype=float)
-    n = len(d)
+    # Inference features: newest month available, even if its next-month label is NaN.
+    latest = d[feature_cols].iloc[-1].to_numpy(dtype=float)
+
+    labeled = d.dropna(subset=["cpi_mom_next"]).reset_index(drop=True)
+    y = labeled["cpi_mom_next"].to_numpy(dtype=float)
+    X = labeled[feature_cols].to_numpy(dtype=float)
+    n = len(labeled)
     if n < min_train_rows + 2:
         raise ValueError("Insufficient rows for time-series validation")
 
@@ -229,14 +239,13 @@ def train_validate_predict(
     else:
         wf_rmse, wf_mae = rmse, mae
 
-    latest = X[-1]
     latest_design = np.r_[1.0, latest]
     next_forecast = float(latest_design @ coef)
 
-    ts0 = pd.Timestamp(d["release_date"].iloc[0]).to_pydatetime()
+    ts0 = pd.Timestamp(labeled["release_date"].iloc[0]).to_pydatetime()
     if ts0.tzinfo is None:
         ts0 = ts0.replace(tzinfo=timezone.utc)
-    ts1 = pd.Timestamp(d["release_date"].iloc[split_idx - 1]).to_pydatetime()
+    ts1 = pd.Timestamp(labeled["release_date"].iloc[split_idx - 1]).to_pydatetime()
     if ts1.tzinfo is None:
         ts1 = ts1.replace(tzinfo=timezone.utc)
 
