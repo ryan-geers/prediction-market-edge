@@ -147,10 +147,19 @@ def _weekly_payload(con: duckdb.DuckDBPyConnection, since: datetime) -> dict[str
         """,
         [since],
     ).fetchone()
+    # Exclude bookkeeping closes (dedup merges / zero-qty cleanup). Those rows
+    # force realized_pnl=0 and are not tradable outcomes — counting them in the
+    # hit-rate denominator (and lifetime averages) collapses the metric toward 0
+    # whenever consolidate-positions runs. opens_window already filters the same way.
+    _real_close_sql = """
+        COALESCE(close_reason, '') NOT IN ('dedup_consolidated', 'zero_qty_cleanup')
+    """
     closed = con.execute(
-        """
+        f"""
         SELECT realized_pnl FROM paper_positions
-        WHERE status = 'closed' AND COALESCE(closed_at_utc, opened_at_utc) >= ?
+        WHERE status = 'closed'
+          AND COALESCE(closed_at_utc, opened_at_utc) >= ?
+          AND {_real_close_sql}
         """,
         [since],
     ).fetchall()
@@ -216,12 +225,14 @@ def _weekly_payload(con: duckdb.DuckDBPyConnection, since: datetime) -> dict[str
     ).fetchone()
 
     settle_row = con.execute(
-        """
+        f"""
         SELECT
           COALESCE(SUM(realized_pnl), 0)::DOUBLE AS sum_r,
           COUNT(*)::BIGINT AS n
         FROM paper_positions
-        WHERE status = 'closed' AND realized_pnl IS NOT NULL
+        WHERE status = 'closed'
+          AND realized_pnl IS NOT NULL
+          AND {_real_close_sql}
         """
     ).fetchone()
     avg_realized = None
@@ -262,7 +273,7 @@ def _weekly_payload(con: duckdb.DuckDBPyConnection, since: datetime) -> dict[str
         """
     ).fetchall()
     exits_window = con.execute(
-        """
+        f"""
         SELECT
           contract_id,
           realized_pnl,
@@ -271,6 +282,7 @@ def _weekly_payload(con: duckdb.DuckDBPyConnection, since: datetime) -> dict[str
         FROM paper_positions
         WHERE status = 'closed'
           AND COALESCE(closed_at_utc, opened_at_utc) >= ?
+          AND {_real_close_sql}
         ORDER BY COALESCE(closed_at_utc, opened_at_utc) DESC NULLS LAST
         LIMIT 25
         """,
