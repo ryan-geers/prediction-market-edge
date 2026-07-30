@@ -243,8 +243,14 @@ closed = (
 )
 hit_rate: float | None = None
 if not closed.empty and "realized_pnl" in closed.columns:
-    wins = (closed["realized_pnl"] > 0).sum()
-    n = len(closed)
+    # Match weekly digest: exclude bookkeeping closes that force realized_pnl=0.
+    if "close_reason" in closed.columns:
+        _bookkeeping = {"dedup_consolidated", "zero_qty_cleanup"}
+        closed_for_hit = closed[~closed["close_reason"].fillna("").isin(_bookkeeping)]
+    else:
+        closed_for_hit = closed
+    wins = (closed_for_hit["realized_pnl"] > 0).sum()
+    n = len(closed_for_hit)
     hit_rate = 100.0 * float(wins) / float(n) if n else None
 
 with tab_paper:
