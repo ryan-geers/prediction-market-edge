@@ -155,6 +155,101 @@ def test_kalshi_parse_markets_fixture():
     assert rows[0]["contract_id"] == "CPI-MAY-OVER-03"
 
 
+class _FakeKalshiMarketsResponse:
+    def __init__(self, status_code: int, payload: dict):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = json.dumps(payload)
+
+    def json(self):
+        return self._payload
+
+
+def test_kalshi_get_markets_follows_cursor_pagination():
+    """Series with >page-size open markets must not silently drop later pages.
+
+    Concrete trigger: KXECONSTATU3 had 115 open strikes while fetch_series used
+    limit=100 with no cursor loop — near-term July contracts on page 2 never
+    entered snapshots, so open positions on those tickers stopped being marked.
+    """
+    connector = KalshiConnector()
+    calls: list[dict] = []
+
+    page1 = {
+        "cursor": "CURSOR_PAGE_2",
+        "markets": [
+            {
+                "ticker": "KXECONSTATU3-26NOV-T5.0",
+                "title": "Nov UNRATE > 5.0",
+                "status": "open",
+                "yes_bid": 40,
+                "yes_ask": 45,
+            }
+        ],
+    }
+    page2 = {
+        "cursor": "",
+        "markets": [
+            {
+                "ticker": "KXECONSTATU3-26JUL-T4.2",
+                "title": "Jul UNRATE > 4.2",
+                "status": "open",
+                "yes_bid": 50,
+                "yes_ask": 52,
+            }
+        ],
+    }
+
+    def _fake_get(url, params=None, headers=None, timeout=None):  # noqa: ARG001
+        params = dict(params or {})
+        calls.append(params)
+        if params.get("cursor") == "CURSOR_PAGE_2":
+            return _FakeKalshiMarketsResponse(200, page2)
+        return _FakeKalshiMarketsResponse(200, page1)
+
+    connector.http_client.session.get = _fake_get  # type: ignore[method-assign]
+
+    rows = connector.fetch_series("KXECONSTATU3")
+    assert [r["contract_id"] for r in rows] == [
+        "KXECONSTATU3-26NOV-T5.0",
+        "KXECONSTATU3-26JUL-T4.2",
+    ]
+    assert len(calls) == 2
+    assert calls[0].get("series_ticker") == "KXECONSTATU3"
+    assert int(calls[0]["limit"]) == 1000
+    assert "cursor" not in calls[0]
+    assert calls[1].get("cursor") == "CURSOR_PAGE_2"
+    assert all(r.get("source_latency_ms", 0) >= 0 for r in rows)
+
+
+def test_kalshi_get_markets_stops_when_cursor_absent():
+    connector = KalshiConnector()
+    calls = {"n": 0}
+
+    def _fake_get(url, params=None, headers=None, timeout=None):  # noqa: ARG001
+        calls["n"] += 1
+        return _FakeKalshiMarketsResponse(
+            200,
+            {
+                "cursor": "",
+                "markets": [
+                    {
+                        "ticker": "KXU3-26MAY-T4.8",
+                        "title": "UNRATE",
+                        "status": "open",
+                        "yes_bid": 40,
+                        "yes_ask": 45,
+                    }
+                ],
+            },
+        )
+
+    connector.http_client.session.get = _fake_get  # type: ignore[method-assign]
+    rows = connector.fetch_series("KXU3")
+    assert len(rows) == 1
+    assert calls["n"] == 1
+
+
 def test_polymarket_parse_markets_fixture():
     connector = PolymarketConnector()
     rows = connector.parse_markets(_load_json("polymarket_markets.json"))
