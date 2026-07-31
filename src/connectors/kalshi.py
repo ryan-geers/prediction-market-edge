@@ -212,44 +212,83 @@ class KalshiConnector(Connector):
         """
         GET /markets — public endpoint, no auth required for market data reads.
 
+        Follows Kalshi's ``cursor`` pagination until the series (or generic query)
+        is exhausted. A single page with ``limit=100`` silently drops markets once
+        a series exceeds that page size (observed for ``KXECONSTATU3`` with 100+
+        open unemployment strikes); those missing contracts then never appear in
+        snapshots, stop being re-marked, and can be swept as stale.
+
         `authenticated=True` adds RSA headers (only needed for portfolio/trading
         endpoints, NOT for reading market prices).
 
-        Wall-clock latency is measured around the HTTP round-trip and stamped on
-        every returned market dict as ``source_latency_ms`` so it flows through
+        Wall-clock latency is measured around the full paginated fetch and stamped
+        on every returned market dict as ``source_latency_ms`` so it flows through
         to ``market_snapshots.source_latency_ms`` for API health monitoring.
         """
         series_ticker = params.get("series_ticker", "")
         path = "/trade-api/v2/markets"
         headers = self._auth_headers(method="GET", path=path) if authenticated else {}
+
+        page_params = dict(params)
+        # API maximum page size is 1000; prefer that so series ladders fit in one page.
+        raw_limit = int(page_params.get("limit") or 1000)
+        page_params["limit"] = max(1, min(raw_limit, 1000))
+        # Series fetches are small; unbounded generic open-book scans stay capped.
+        max_pages = 50 if series_ticker else 5
+
+        all_markets: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        cursor = ""
         t0 = time.monotonic()
         try:
-            response = self.http_client.session.get(
-                f"{self.BASE_URL}/markets",
-                params=params,
-                headers=headers,
-                timeout=self.http_client.timeout_seconds,
-            )
-            latency_ms = int((time.monotonic() - t0) * 1000)
-            if response.status_code != 200:
-                LOGGER.warning(
-                    "Kalshi GET /markets returned HTTP %d (params=%s). Response: %.300s",
-                    response.status_code,
-                    params,
-                    response.text,
+            for page_idx in range(max_pages):
+                req_params = dict(page_params)
+                if cursor:
+                    req_params["cursor"] = cursor
+                response = self.http_client.session.get(
+                    f"{self.BASE_URL}/markets",
+                    params=req_params,
+                    headers=headers,
+                    timeout=self.http_client.timeout_seconds,
                 )
-                return []
-            markets = self.parse_markets(response.json(), series_ticker=series_ticker)
-            for m in markets:
+                if response.status_code != 200:
+                    LOGGER.warning(
+                        "Kalshi GET /markets returned HTTP %d (params=%s). Response: %.300s",
+                        response.status_code,
+                        req_params,
+                        response.text,
+                    )
+                    break
+                payload = response.json()
+                markets = self.parse_markets(payload, series_ticker=series_ticker)
+                for m in markets:
+                    cid = m["contract_id"]
+                    if cid in seen:
+                        continue
+                    seen.add(cid)
+                    all_markets.append(m)
+                cursor = str(payload.get("cursor") or "").strip()
+                if not cursor:
+                    break
+                if page_idx == max_pages - 1:
+                    LOGGER.warning(
+                        "Kalshi GET /markets hit max_pages=%d (series=%s) — results may still be incomplete",
+                        max_pages,
+                        series_ticker or "<generic>",
+                    )
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            for m in all_markets:
                 m["source_latency_ms"] = latency_ms
-            return markets
+            return all_markets
         except Exception as exc:
             LOGGER.warning("Kalshi GET /markets failed (params=%s): %s", params, exc)
-            return []
+            return all_markets
 
     def fetch_series(self, series_ticker: str) -> list[dict[str, Any]]:
-        """Fetch all open markets for a single Kalshi series ticker."""
-        markets = self._get_markets({"series_ticker": series_ticker, "status": "open", "limit": 100})
+        """Fetch all open markets for a single Kalshi series ticker (paginated)."""
+        markets = self._get_markets(
+            {"series_ticker": series_ticker, "status": "open", "limit": 1000}
+        )
         if not markets:
             LOGGER.warning("Kalshi: 0 open markets for series=%s", series_ticker)
         return markets
@@ -285,7 +324,7 @@ class KalshiConnector(Connector):
             "Kalshi: series-specific fetches returned nothing — trying generic fetch. "
             "Tip: confirm KALSHI_API_KEY (PEM private key) and KALSHI_KEY_ID (dashboard UUID) are both set."
         )
-        generic = self._get_markets({"status": "open", "limit": 200})
+        generic = self._get_markets({"status": "open", "limit": 1000})
         if generic:
             # Log what we got so operators can diagnose wrong series tickers.
             sample = ", ".join(m["contract_id"] for m in generic[:10])
