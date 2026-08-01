@@ -269,8 +269,15 @@ class EconomicIndicatorsThesis(ThesisModule):
             quote_unusable = False
             blocked_by_health = False
             blocked_by_policy = False
+            blocked_by_stub = False
 
-            if mid is None or not qa.is_signal_quality:
+            if contract.get("is_stub"):
+                # Hard-coded Kalshi fallback rows exist so the pipeline can still
+                # emit diagnostics when the API is down. They must never open
+                # paper positions — synthetic bid/ask would corrupt the ledger.
+                decision = "hold"
+                blocked_by_stub = True
+            elif mid is None or not qa.is_signal_quality:
                 decision = "hold"
                 quote_unusable = True
             elif not is_healthy:
@@ -304,8 +311,9 @@ class EconomicIndicatorsThesis(ThesisModule):
                 reason_dict["blocked_by_health_gate"] = True
             if blocked_by_policy:
                 reason_dict["blocked_by_no_fade_policy"] = True
-            if contract.get("is_stub"):
+            if blocked_by_stub:
                 reason_dict["data_source"] = "kalshi_stub"
+                reason_dict["blocked_by_stub_market"] = True
 
             signal = SignalRecord(
                 run_id=run_id,

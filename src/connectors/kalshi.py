@@ -305,10 +305,10 @@ class KalshiConnector(Connector):
             )
             return relevant
 
-        # Fallback 2: hard-coded stubs (last resort — signals are flagged as synthetic).
+        # Fallback 2: hard-coded stubs (last resort — diagnostics only; entries blocked).
         LOGGER.warning(
             "Kalshi: generic fetch also returned nothing relevant — falling back to hard-coded stubs. "
-            "All signals will be flagged as synthetic. "
+            "Stub markets are flagged synthetic and must not open paper positions. "
             "Check: correct base URL (%s), valid key_id+private_key, and series ticker names.",
             self.BASE_URL,
         )
@@ -316,8 +316,8 @@ class KalshiConnector(Connector):
 
     @staticmethod
     def _fallback_stubs() -> list[dict[str, Any]]:
-        # is_stub=True causes decision_reason to carry 'data_source=kalshi_stub',
-        # which triggers the red warning banner in the weekly digest.
+        # is_stub=True forces generate_signals() to hold and tags decision_reason
+        # with data_source=kalshi_stub for the weekly digest warning banner.
         return [
             {
                 "venue": "kalshi",

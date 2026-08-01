@@ -99,3 +99,45 @@ def test_signal_block_long_no_when_model_favors_yes(tmp_path: Path) -> None:
     assert len(signals) == 1
     assert signals[0].decision == "hold"
     assert "blocked_by_no_fade_policy" in signals[0].decision_reason
+
+
+def test_kalshi_stub_markets_cannot_open_paper_positions(tmp_path: Path) -> None:
+    """Hard-coded Kalshi fallback rows must hold — never fill paper trades."""
+    settings = Settings(
+        duckdb_path=tmp_path / "db.duckdb",
+        data_dir=tmp_path,
+        edge_threshold_bps=100,
+    )
+    thesis = EconomicIndicatorsThesis(settings)
+    stubs = KalshiConnector._fallback_stubs()
+    assert all(m.get("is_stub") for m in stubs)
+
+    # Healthy unemployment model that would otherwise fade the stub mid.
+    class _UnReg:
+        prediction = 4.0
+        rmse = 0.05
+        walk_forward_val_rmse = 0.05
+
+    fc = {
+        "market": stubs,
+        "model_probability": 0.55,
+        "predicted_cpi_mom_pct": 0.35,
+        "cpi_mom_threshold_pct": 0.3,
+        "validation_rmse": 0.2,
+        "walk_forward_val_rmse": 0.2,
+        "macro_history_count": 48,
+        "model_healthy": True,
+        "un_reg": _UnReg(),
+        "un_healthy": True,
+    }
+    signals, _ = thesis.generate_signals("stub-run", fc)
+    assert len(signals) == len(stubs)
+    assert {s.decision for s in signals} == {"hold"}
+    for signal in signals:
+        reason = json.loads(signal.decision_reason)
+        assert reason.get("data_source") == "kalshi_stub"
+        assert reason.get("blocked_by_stub_market") is True
+
+    orders, positions = thesis.paper_trade(signals)
+    assert orders == []
+    assert positions == []
