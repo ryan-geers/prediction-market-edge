@@ -98,6 +98,33 @@ def test_paper_trading_skips_hold():
     assert orders == [] and pos == []
 
 
+def test_simulate_paper_trades_skips_yes_entry_without_yes_ask():
+    """Bid-only books (ask=0) must not fill YES at the 0.001 slippage floor."""
+    s = _base_signal().model_copy(
+        update={
+            "bid_price": 0.55,
+            "ask_price": 0.0,
+            "market_implied_probability": 0.50,
+            "decision": "enter_long_yes",
+            "edge_bps": 3000.0,
+        }
+    )
+    settings = Settings(paper_bankroll=500.0, paper_position_size_pct=0.05)
+    # Pre-fix behaviour: fill_price=0.001, qty = 25 / 0.001 = 25000.
+    orders, pos = simulate_paper_trades([s], settings)
+    assert orders == [] and pos == []
+
+
+def test_simulate_paper_trades_yes_entry_with_executable_ask():
+    """Control: a normal two-sided ask still opens a YES paper position."""
+    s = _base_signal()
+    settings = Settings(paper_bankroll=500.0, paper_position_size_pct=0.05)
+    orders, pos = simulate_paper_trades([s], settings)
+    assert len(orders) == 1 and len(pos) == 1
+    assert orders[0].fill_price >= settings.market_min_ask_for_quote
+    assert orders[0].qty < 1000
+
+
 def test_paper_eod_close_realizes_pnl():
     s = _base_signal()
     settings = Settings()

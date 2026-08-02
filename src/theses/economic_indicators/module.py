@@ -269,6 +269,7 @@ class EconomicIndicatorsThesis(ThesisModule):
             quote_unusable = False
             blocked_by_health = False
             blocked_by_policy = False
+            blocked_by_missing_yes_ask = False
 
             if mid is None or not qa.is_signal_quality:
                 decision = "hold"
@@ -291,6 +292,16 @@ class EconomicIndicatorsThesis(ThesisModule):
                 decision = "hold"
                 blocked_by_policy = True
 
+            # Bid-only books (Kalshi often sends yes_ask=0) can still look like
+            # signal-quality via last_trade fallback. Long YES cannot lift an
+            # offer that does not exist — paper fills would clamp to ~0.001.
+            if (
+                decision == "enter_long_yes"
+                and ask < float(self.settings.market_min_ask_for_quote)
+            ):
+                decision = "hold"
+                blocked_by_missing_yes_ask = True
+
             reason_dict: dict = {
                 "contract_type": contract_type,
                 "model_vs_mid_edge_bps": round(edge_bps, 2),
@@ -304,6 +315,8 @@ class EconomicIndicatorsThesis(ThesisModule):
                 reason_dict["blocked_by_health_gate"] = True
             if blocked_by_policy:
                 reason_dict["blocked_by_no_fade_policy"] = True
+            if blocked_by_missing_yes_ask:
+                reason_dict["blocked_by_missing_yes_ask"] = True
             if contract.get("is_stub"):
                 reason_dict["data_source"] = "kalshi_stub"
 
