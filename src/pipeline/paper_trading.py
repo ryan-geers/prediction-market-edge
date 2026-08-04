@@ -5,6 +5,7 @@ with slippage, fee assumptions, and mark-to-market (optional same-run EOD close)
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -23,15 +24,59 @@ if TYPE_CHECKING:
     from src.core.config import Settings
 
 
+# Kalshi publishes the same economic factor under multiple series tickers
+# (e.g. KXU3 and KXECONSTATU3 both cover U-3 unemployment ladders). Map those
+# prefixes onto one risk bucket so family caps cannot be bypassed by dual listing.
+_SERIES_FAMILY_ALIASES: dict[str, str] = {
+    "KXU3": "UNRATE",
+    "KXECONSTATU3": "UNRATE",
+    "KXCPI": "CPI",
+    "KXMCPI": "CPI",
+    "CPIM": "CPI",
+    "CPI": "CPI",
+}
+
+_THRESHOLD_T_RE = re.compile(r"^(.+)-T([0-9.]+)$", re.IGNORECASE)
+_OVER_RE = re.compile(r"^(.+)-OVER-([0-9.]+)$", re.IGNORECASE)
+
+
 def contract_family(contract_id: str) -> str:
     """
-    Bucket key for diversification: first dash-separated segment of the contract id.
+    Bucket key for diversification caps.
 
-    Examples: ``KXCPI-26MAY-T0.3`` → ``KXCPI``, ``CPI-MAY-OVER-0.3`` → ``CPI``.
+    Uses the first dash-separated segment, then collapses known dual-listed
+    Kalshi series onto one factor name.
+
+    Examples: ``KXCPI-26MAY-T0.3`` → ``CPI``, ``KXU3-26MAY-T4.2`` → ``UNRATE``,
+    ``KXECONSTATU3-26MAY-T4.2`` → ``UNRATE``.
     """
     if not contract_id:
         return ""
-    return contract_id.split("-", 1)[0]
+    prefix = contract_id.split("-", 1)[0]
+    return _SERIES_FAMILY_ALIASES.get(prefix, prefix)
+
+
+def economic_strike_key(contract_id: str) -> str | None:
+    """
+    Canonical month/threshold identity across dual-listed series.
+
+    ``KXU3-26JUL-T4.2`` and ``KXECONSTATU3-26JUL-T4.2`` both map to
+    ``UNRATE:26JUL:4.2``. Returns ``None`` when the ticker is not a known
+    aliased ladder format.
+    """
+    if not contract_id:
+        return None
+    prefix, sep, rest = contract_id.partition("-")
+    if not sep or not rest:
+        return None
+    family = _SERIES_FAMILY_ALIASES.get(prefix)
+    if family is None:
+        return None
+    m = _THRESHOLD_T_RE.match(rest) or _OVER_RE.match(rest)
+    if not m:
+        return None
+    month_or_label, threshold = m.group(1), m.group(2)
+    return f"{family}:{month_or_label}:{threshold}"
 
 
 def open_positions_by_family(positions: list[PaperPositionRecord]) -> dict[str, int]:
@@ -42,6 +87,20 @@ def open_positions_by_family(positions: list[PaperPositionRecord]) -> dict[str, 
             continue
         fam = contract_family(p.contract_id)
         out[fam] = out.get(fam, 0) + 1
+    return out
+
+
+def open_economic_strikes(
+    positions: list[PaperPositionRecord],
+) -> set[tuple[str, str]]:
+    """Open ``(economic_strike_key, direction)`` pairs for cross-series dedup."""
+    out: set[tuple[str, str]] = set()
+    for p in positions:
+        if p.status != "open" or not p.direction:
+            continue
+        key = economic_strike_key(p.contract_id)
+        if key is not None:
+            out.add((key, p.direction))
     return out
 
 
@@ -227,6 +286,7 @@ def apply_dedup(
     settings: Settings,
     open_counts_by_key: dict[tuple[str, str, str], int] | None = None,
     open_family_counts: dict[str, int] | None = None,
+    open_strike_keys: set[tuple[str, str]] | None = None,
 ) -> tuple[list[PaperPositionRecord], list[AddToPosition]]:
     """
     Deduplicate new-entry candidates against currently-open positions.
@@ -248,7 +308,11 @@ def apply_dedup(
 
     ``open_family_counts`` seeds :func:`contract_family` tallies so
     ``paper_max_open_per_contract_family`` can block additional opens in the
-    same series (e.g. many ``KXCPI-*`` strikes).
+    same factor family (e.g. many ``KXCPI-*`` / ``KXU3-*`` strikes).
+
+    ``open_strike_keys`` seeds :func:`economic_strike_key` pairs so dual-listed
+    series (``KXU3`` vs ``KXECONSTATU3``) cannot open the same month/threshold
+    bet twice under different contract ids.
 
     Closed candidates (eod_close mode) and direction-less rows always pass
     through as new inserts regardless of the flag.
@@ -266,6 +330,7 @@ def apply_dedup(
     max_total = int(settings.paper_max_total_open)
     max_per_family = int(settings.paper_max_open_per_contract_family)
     family_tally: dict[str, int] = dict(open_family_counts) if open_family_counts else {}
+    strike_tally: set[tuple[str, str]] = set(open_strike_keys) if open_strike_keys else set()
 
     # Current portfolio size = sum of all open-count values (each key is one row).
     total_currently_open: int = (
@@ -281,6 +346,7 @@ def apply_dedup(
             continue
 
         key = (pos.contract_id, pos.venue, pos.direction)
+        strike_key = economic_strike_key(pos.contract_id)
 
         # Count-based guard: block if total open rows (including null-direction legacy
         # entries) already meets the configured ceiling.
@@ -289,6 +355,10 @@ def apply_dedup(
                           + open_counts_by_key.get((pos.contract_id, pos.venue, ""), 0))
             if total_open >= max_open:
                 continue
+
+        # Cross-series strike guard: same month/threshold on an aliased series.
+        if strike_key is not None and (strike_key, pos.direction) in strike_tally:
+            continue
 
         existing = existing_by_key.get(key)
 
@@ -305,6 +375,8 @@ def apply_dedup(
             if max_per_family > 0:
                 fam = contract_family(pos.contract_id)
                 family_tally[fam] = family_tally.get(fam, 0) + 1
+            if strike_key is not None:
+                strike_tally.add((strike_key, pos.direction))
             if pos.signal_id:
                 acted_signal_ids.add(pos.signal_id)
         elif settings.paper_allow_add_to_position:

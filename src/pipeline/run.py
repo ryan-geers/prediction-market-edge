@@ -11,7 +11,12 @@ from src.core.config import get_settings
 from src.core.logging import setup_logging
 from src.core.schemas import PositionClose, PositionMark, RunManifest
 from src.core.storage import Storage
-from src.pipeline.paper_trading import apply_dedup, apply_exits, open_positions_by_family
+from src.pipeline.paper_trading import (
+    apply_dedup,
+    apply_exits,
+    open_economic_strikes,
+    open_positions_by_family,
+)
 from src.pipeline.reporting import generate_run_report, generate_run_report_html
 from src.theses.registry import build_registry
 
@@ -197,8 +202,14 @@ def run_pipeline(thesis_name: str = "economic_indicators") -> tuple[str, Path | 
         open_counts_by_key[k] = open_counts_by_key.get(k, 0) + 1
 
     open_family_counts = open_positions_by_family(live_positions)
+    open_strike_keys = open_economic_strikes(live_positions)
     new_positions, add_tos, acted_signal_ids = apply_dedup(
-        candidate_positions, existing_by_key, settings, open_counts_by_key, open_family_counts
+        candidate_positions,
+        existing_by_key,
+        settings,
+        open_counts_by_key,
+        open_family_counts,
+        open_strike_keys,
     )
     for add_to in add_tos:
         storage.add_to_position(add_to)
