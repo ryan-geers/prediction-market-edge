@@ -401,7 +401,19 @@ def test_open_positions_by_family_counts_first_segment() -> None:
     p1 = _make_position(contract_id="KXCPI-26MAY-T0.1")
     p2 = _make_position(contract_id="KXCPI-26NOV-T0.2", position_id="p2")
     p3 = _make_position(contract_id="KXU3-26MAY-T4.0", position_id="p3")
-    assert open_positions_by_family([p1, p2, p3]) == {"KXCPI": 2, "KXU3": 1}
+    assert open_positions_by_family([p1, p2, p3]) == {"CPI": 2, "UNRATE": 1}
+
+
+def test_contract_family_aliases_dual_listed_unrate_series() -> None:
+    from src.pipeline.paper_trading import contract_family, economic_strike_key
+
+    assert contract_family("KXU3-26JUL-T4.2") == "UNRATE"
+    assert contract_family("KXECONSTATU3-26JUL-T4.2") == "UNRATE"
+    assert contract_family("KXCPI-26JUL-T0.3") == "CPI"
+    assert contract_family("CPI-MAY-OVER-0.3") == "CPI"
+    assert economic_strike_key("KXU3-26JUL-T4.2") == "UNRATE:26JUL:4.2"
+    assert economic_strike_key("KXECONSTATU3-26JUL-T4.2") == "UNRATE:26JUL:4.2"
+    assert economic_strike_key("CPI-MAY-OVER-0.3") == "CPI:MAY:0.3"
 
 
 def test_apply_dedup_contract_family_cap_blocks_second_same_series() -> None:
@@ -418,12 +430,61 @@ def test_apply_dedup_contract_family_cap_blocks_second_same_series() -> None:
     assert acted == {first.signal_id}
 
 
+def test_apply_dedup_contract_family_aliases_block_across_unrate_series() -> None:
+    """KXU3 and KXECONSTATU3 share the UNRATE family cap."""
+    settings = Settings(
+        paper_allow_add_to_position=False,
+        paper_max_open_per_contract_family=1,
+        paper_max_total_open=200,
+    )
+    first = _make_position(position_id="p1", contract_id="KXU3-26JUL-T4.0")
+    second = _make_position(position_id="p2", contract_id="KXECONSTATU3-26AUG-T4.1")
+    new_positions, add_tos, acted = apply_dedup([first, second], {}, settings, None, {})
+    assert [p.contract_id for p in new_positions] == ["KXU3-26JUL-T4.0"]
+    assert add_tos == []
+    assert acted == {first.signal_id}
+
+
+def test_apply_dedup_blocks_duplicate_economic_strike_across_series() -> None:
+    """Same month/threshold on dual-listed series must not both open."""
+    settings = Settings(
+        paper_allow_add_to_position=False,
+        paper_max_open_per_contract_family=75,
+        paper_max_total_open=200,
+    )
+    kxu3 = _make_position(position_id="p1", contract_id="KXU3-26JUL-T4.2")
+    twin = _make_position(position_id="p2", contract_id="KXECONSTATU3-26JUL-T4.2")
+    new_positions, add_tos, acted = apply_dedup([kxu3, twin], {}, settings, None, {})
+    assert [p.contract_id for p in new_positions] == ["KXU3-26JUL-T4.2"]
+    assert add_tos == []
+    assert acted == {kxu3.signal_id}
+
+
+def test_apply_dedup_blocks_economic_strike_already_open() -> None:
+    settings = Settings(
+        paper_allow_add_to_position=False,
+        paper_max_open_per_contract_family=75,
+        paper_max_total_open=200,
+    )
+    cand = _make_position(position_id="new", contract_id="KXECONSTATU3-26JUL-T4.2")
+    new_positions, add_tos, acted = apply_dedup(
+        [cand],
+        {},
+        settings,
+        None,
+        {"UNRATE": 1},
+        {("UNRATE:26JUL:4.2", "yes")},
+    )
+    assert new_positions == []
+    assert acted == set()
+
+
 def test_apply_dedup_contract_family_respects_existing_book() -> None:
     settings = Settings(
         paper_allow_add_to_position=False,
         paper_max_open_per_contract_family=2,
     )
     cand = _make_position(position_id="new", contract_id="KXCPI-NEW")
-    new_positions, add_tos, acted = apply_dedup([cand], {}, settings, None, {"KXCPI": 2})
+    new_positions, add_tos, acted = apply_dedup([cand], {}, settings, None, {"CPI": 2})
     assert new_positions == []
     assert acted == set()

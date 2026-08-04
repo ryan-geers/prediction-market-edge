@@ -45,9 +45,9 @@ class Settings(BaseSettings):
     # the per-key guard (paper_max_open_per_key=1) handles contract-level dedup.
     paper_max_total_open: int = 200
 
-    #: Max open positions sharing the same Kalshi-style series prefix
-    #: (text before the first "-", e.g. KXCPI, KXU3, CPI). Reduces one-factor CPI
-    #: ladders from crowding the book. 0 = disabled.
+    #: Max open positions sharing the same economic factor family after aliasing
+    #: dual-listed Kalshi series (KXCPI/KXMCPI/CPI → CPI; KXU3/KXECONSTATU3 → UNRATE).
+    #: Reduces one-factor ladders from crowding the book. 0 = disabled.
     paper_max_open_per_contract_family: int = 75
 
     #: Auto-close open positions whose last_mark_time_utc is older than this many
