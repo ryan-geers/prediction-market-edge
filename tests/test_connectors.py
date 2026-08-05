@@ -44,6 +44,45 @@ def test_kalshi_normalization():
     assert row["contract_type"] == "unemployment"
     assert row["threshold"] == 4.8
     assert row["series_ticker"] == "KXU3"
+    assert row["payoff_kind"] == "greater"
+
+
+def test_kalshi_normalization_exact_unemployment_strike():
+    """KXECONSTATU3 live ladders settle on an exact rate, not above-threshold."""
+    connector = KalshiConnector()
+    row = connector._normalize_market(
+        {
+            "ticker": "KXECONSTATU3-26JUL-T4.2",
+            "title": "Unemployment rate in Jul 2026?",
+            "yes_sub_title": "Exactly 4.2%",
+            "rules_primary": "If the Unemployment rate is exactly 4.2% in Jul 2026, then the market resolves to Yes.",
+            "strike_type": "custom",
+            "yes_bid": 20,
+            "yes_ask": 25,
+            "last_price": 22,
+        },
+        series_ticker="KXECONSTATU3",
+    )
+    assert row["contract_type"] == "unemployment"
+    assert row["threshold"] == pytest.approx(4.2)
+    assert row["payoff_kind"] == "exact"
+
+
+def test_kalshi_normalization_greater_strike_type():
+    connector = KalshiConnector()
+    row = connector._normalize_market(
+        {
+            "ticker": "KXU3-26JUL-T4.2",
+            "title": "Will the unemployment rate (U-3) be above 4.2% in July?",
+            "yes_sub_title": "Above 4.2%",
+            "strike_type": "greater",
+            "yes_bid": 40,
+            "yes_ask": 45,
+            "last_price": 43,
+        },
+        series_ticker="KXU3",
+    )
+    assert row["payoff_kind"] == "greater"
 
 
 def test_kalshi_normalization_cpi():

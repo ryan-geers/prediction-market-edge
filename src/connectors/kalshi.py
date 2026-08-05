@@ -82,6 +82,50 @@ def _parse_threshold(ticker: str) -> float | None:
     return None
 
 
+def _parse_payoff_kind(item: dict[str, Any], ticker: str) -> str:
+    """
+    Classify the binary payoff the market settles on.
+
+    Economic models in this repo map point forecasts to P(YES) for
+    *greater-than / above-threshold* contracts only. Live Kalshi also lists
+    exact-rate ladders (notably ``KXECONSTATU3`` with ``strike_type=custom``
+    and rules like "exactly 5.5%"). Treating those with the above-threshold
+    sigmoid would open long YES on many mutually exclusive strikes.
+
+    Returns one of: ``greater``, ``exact``, ``other``.
+    """
+    strike_type = str(item.get("strike_type") or "").strip().lower()
+    if strike_type in {"greater", "greater_or_equal"}:
+        return "greater"
+    if strike_type in {"less", "less_or_equal", "between", "equal"}:
+        return "other" if strike_type != "equal" else "exact"
+
+    blob = " ".join(
+        str(item.get(field) or "")
+        for field in ("yes_sub_title", "no_sub_title", "rules_primary", "title", "subtitle")
+    ).lower()
+    if re.search(r"\bexactly\b|\bexact(?:ly)?\s+\d", blob):
+        return "exact"
+    if strike_type == "custom" and "exactly" in blob:
+        return "exact"
+    if (
+        re.search(r"\babove\b|\bmore than\b|\bover\b|\bgreater than\b", blob)
+        or "-OVER-" in ticker.upper()
+    ):
+        return "greater"
+    # Known greater-than series keep that semantics even when API text is sparse
+    # (fixtures / stubs). Exact-rate series must not inherit this default.
+    series = str(item.get("series_ticker") or "").upper()
+    ticker_u = ticker.upper()
+    if series in {"KXU3", "KXCPI", "KXMCPI", "CPIM", "CPI"} or ticker_u.startswith(
+        ("KXU3-", "KXCPI-", "KXMCPI-", "CPIM-", "CPI-")
+    ):
+        return "greater"
+    if series == "KXECONSTATU3" or ticker_u.startswith("KXECONSTATU3-"):
+        return "exact"
+    return "other"
+
+
 def _build_rsa_signature(private_key_pem: str, timestamp_ms: str, method: str, path: str) -> str:
     """
     Sign `timestamp_ms + method.upper() + path` with RSA-PSS / SHA-256, as
@@ -190,6 +234,7 @@ class KalshiConnector(Connector):
             "series_ticker": resolved_series,
             "contract_type": contract_type,
             "threshold": _parse_threshold(ticker),
+            "payoff_kind": _parse_payoff_kind({**item, "series_ticker": resolved_series}, ticker),
         }
 
     def parse_markets(self, payload: dict[str, Any], series_ticker: str = "") -> list[dict[str, Any]]:
@@ -329,6 +374,7 @@ class KalshiConnector(Connector):
                 "series_ticker": "KXCPI",
                 "contract_type": "cpi",
                 "threshold": 0.3,
+                "payoff_kind": "greater",
                 "is_stub": True,
             },
             {
@@ -341,6 +387,7 @@ class KalshiConnector(Connector):
                 "series_ticker": "KXU3",
                 "contract_type": "unemployment",
                 "threshold": 4.2,
+                "payoff_kind": "greater",
                 "is_stub": True,
             },
         ]

@@ -269,8 +269,17 @@ class EconomicIndicatorsThesis(ThesisModule):
             quote_unusable = False
             blocked_by_health = False
             blocked_by_policy = False
+            blocked_by_payoff = False
 
-            if mid is None or not qa.is_signal_quality:
+            # Point-forecast → sigmoid mappers only price greater-than / above-threshold
+            # binaries. Exact-rate ladders (live KXECONSTATU3) must not receive those
+            # probabilities — otherwise many mutually exclusive strikes all look like
+            # strong long-YES edges.
+            payoff_kind = str(contract.get("payoff_kind") or "greater").lower()
+            if contract_type in (_CPI_CONTRACT_TYPES | _UNEMPLOYMENT_CONTRACT_TYPES) and payoff_kind != "greater":
+                decision = "hold"
+                blocked_by_payoff = True
+            elif mid is None or not qa.is_signal_quality:
                 decision = "hold"
                 quote_unusable = True
             elif not is_healthy:
@@ -296,6 +305,7 @@ class EconomicIndicatorsThesis(ThesisModule):
                 "model_vs_mid_edge_bps": round(edge_bps, 2),
                 **reason_extras,
                 "quote_quality": qa.quality,
+                "payoff_kind": payoff_kind,
             }
             if quote_unusable:
                 reason_dict["quote_unusable"] = True
@@ -304,6 +314,8 @@ class EconomicIndicatorsThesis(ThesisModule):
                 reason_dict["blocked_by_health_gate"] = True
             if blocked_by_policy:
                 reason_dict["blocked_by_no_fade_policy"] = True
+            if blocked_by_payoff:
+                reason_dict["blocked_by_unsupported_payoff"] = True
             if contract.get("is_stub"):
                 reason_dict["data_source"] = "kalshi_stub"
 

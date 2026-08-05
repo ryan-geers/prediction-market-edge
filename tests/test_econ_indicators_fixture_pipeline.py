@@ -83,6 +83,7 @@ def test_signal_block_long_no_when_model_favors_yes(tmp_path: Path) -> None:
                 "best_ask": 0.99,
                 "last_trade": 0.98,
                 "contract_type": "cpi",
+                "payoff_kind": "greater",
                 "is_stub": False,
             }
         ],
@@ -99,3 +100,66 @@ def test_signal_block_long_no_when_model_favors_yes(tmp_path: Path) -> None:
     assert len(signals) == 1
     assert signals[0].decision == "hold"
     assert "blocked_by_no_fade_policy" in signals[0].decision_reason
+
+
+class _FakeUnReg:
+    prediction = 4.3
+    rmse = 0.2
+    walk_forward_val_rmse = 0.2
+
+
+def test_signal_blocks_exact_unemployment_payoffs(tmp_path: Path) -> None:
+    """Exact-rate ladders must not use the above-threshold sigmoid for entries."""
+    settings = Settings(
+        duckdb_path=tmp_path / "db.duckdb",
+        data_dir=tmp_path,
+        edge_threshold_bps=300,
+    )
+    thesis = EconomicIndicatorsThesis(settings)
+    # Mid ~0.20 with pred 4.3 would produce a large above-threshold edge on T4.0,
+    # but an exact-4.0% market cannot share that payoff model.
+    fc = {
+        "market": [
+            {
+                "venue": "kalshi",
+                "contract_id": "KXECONSTATU3-26JUL-T4.0",
+                "label": "Unemployment rate in Jul 2026?",
+                "best_bid": 0.18,
+                "best_ask": 0.22,
+                "last_trade": 0.20,
+                "contract_type": "unemployment",
+                "threshold": 4.0,
+                "payoff_kind": "exact",
+                "series_ticker": "KXECONSTATU3",
+                "is_stub": False,
+            },
+            {
+                "venue": "kalshi",
+                "contract_id": "KXU3-26JUL-T4.0",
+                "label": "Will U-3 be above 4.0% in July?",
+                "best_bid": 0.18,
+                "best_ask": 0.22,
+                "last_trade": 0.20,
+                "contract_type": "unemployment",
+                "threshold": 4.0,
+                "payoff_kind": "greater",
+                "series_ticker": "KXU3",
+                "is_stub": False,
+            },
+        ],
+        "model_probability": 0.5,
+        "predicted_cpi_mom_pct": 0.2,
+        "validation_rmse": 0.5,
+        "walk_forward_val_rmse": 0.5,
+        "macro_history_count": 100,
+        "model_healthy": True,
+        "un_reg": _FakeUnReg(),
+        "un_healthy": True,
+    }
+    signals, _ = thesis.generate_signals("r-exact-payoff", fc)
+    by_id = {s.contract_id: s for s in signals}
+    exact = by_id["KXECONSTATU3-26JUL-T4.0"]
+    greater = by_id["KXU3-26JUL-T4.0"]
+    assert exact.decision == "hold"
+    assert "blocked_by_unsupported_payoff" in exact.decision_reason
+    assert greater.decision == "enter_long_yes"
