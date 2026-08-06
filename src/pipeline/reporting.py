@@ -678,6 +678,15 @@ def _signal_narrative(
             "acting on unreliable predictions."
         )
 
+    if "blocked_by_horizon_mismatch" in str(reason):
+        event_m = pairs.get("event_month", "unknown")
+        target_m = pairs.get("forecast_target_month", "unknown")
+        return (
+            f"No action — this contract settles on {event_m}, but the model only "
+            f"forecasts {target_m} (one-step ahead). Distant month ladders are not scored "
+            "with the near-term prediction."
+        )
+
     # Unknown contract type.
     if contract_type == "unknown" or contract_type == "":
         return (

@@ -106,7 +106,7 @@ def apply_exits(
     positions that should be closed this run.
 
     Rules (applied in order; first match wins):
-      A. Signal flip  — close when the thesis reverses its opinion (paper_exit_on_flip)
+      A. Signal flip  — close when the thesis actively reverses side (paper_exit_on_flip)
       B. Stop-loss    — close when unrealised loss exceeds a % of cost basis (paper_stop_loss_pct)
       C. Settlement   — close when the connector marks a contract settled (paper_close_on_settle)
                         [fires only when snapshot data includes settlement status; stub for now]
@@ -132,11 +132,23 @@ def apply_exits(
         key = (pos.contract_id, pos.venue)
 
         # ── Rule A: edge flip / signal reversal ──────────────────────────────
+        # Require an actionable opposite entry decision. Horizon/health/policy/quote
+        # holds still compute a large edge_bps from a non-tradable comparison; using
+        # edge alone would force-close open books (e.g. NOV) when the one-step model
+        # only scores JUL.
         if settings.paper_exit_on_flip and pos.direction is not None:
             sig = signal_by_contract.get(key)
             if sig is not None:
-                flip_yes = pos.direction == "yes" and sig.edge_bps < -threshold_bps
-                flip_no = pos.direction == "no" and sig.edge_bps > threshold_bps
+                flip_yes = (
+                    pos.direction == "yes"
+                    and sig.decision == "enter_long_no"
+                    and sig.edge_bps < -threshold_bps
+                )
+                flip_no = (
+                    pos.direction == "no"
+                    and sig.decision == "enter_long_yes"
+                    and sig.edge_bps > threshold_bps
+                )
                 if flip_yes or flip_no:
                     _reason = sig.decision_reason or ""
                     try:

@@ -2,10 +2,12 @@ import json
 import logging
 from datetime import datetime, timezone
 
+import pandas as pd
+
 from src.connectors.bea import BeaConnector
 from src.connectors.bls import BlsConnector
 from src.connectors.fred import FredConnector
-from src.connectors.kalshi import KalshiConnector
+from src.connectors.kalshi import KalshiConnector, _parse_event_month
 from src.core.market_quotes import assess_yes_quote
 from src.core.config import Settings
 from src.core.schemas import (
@@ -40,6 +42,56 @@ def _spread_bps(bid: float, ask: float) -> float:
     if mid == 0:
         return 0.0
     return ((ask - bid) / mid) * 10000
+
+
+def _add_months(dt: datetime, months: int) -> datetime:
+    """Return month-start UTC datetime shifted by ``months``."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    year = dt.year + (dt.month - 1 + months) // 12
+    month = (dt.month - 1 + months) % 12 + 1
+    return datetime(year, month, 1, tzinfo=timezone.utc)
+
+
+def _forecast_target_month_from_training(training_df) -> datetime | None:
+    """
+    One-step models label row t with the t+1 outcome.
+
+    The chronologically last training row's ``release_date`` is feature month T;
+    the live prediction is therefore for calendar month T+1 — the only horizon
+    this model can score. Distant Kalshi ladders (e.g. NOV when predicting JUL)
+    must not reuse that scalar.
+    """
+    if training_df is None or len(training_df) == 0 or "release_date" not in getattr(training_df, "columns", []):
+        return None
+    try:
+        last = pd.Timestamp(training_df.sort_values("release_date")["release_date"].iloc[-1]).to_pydatetime()
+    except Exception:
+        return None
+    return _add_months(last, 1)
+
+
+def _month_key(value) -> tuple[int, int] | None:
+    """Normalize ISO strings / datetimes to (year, month) for equality checks."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return (value.year, value.month)
+    if hasattr(value, "year") and hasattr(value, "month"):
+        return (int(value.year), int(value.month))
+    try:
+        ts = pd.Timestamp(value)
+        return (int(ts.year), int(ts.month))
+    except Exception:
+        return None
+
+
+def _contract_event_month(contract: dict) -> datetime | None:
+    raw = contract.get("event_month")
+    key = _month_key(raw)
+    if key is not None:
+        return datetime(key[0], key[1], 1, tzinfo=timezone.utc)
+    return _parse_event_month(str(contract.get("contract_id") or ""))
 
 
 class EconomicIndicatorsThesis(ThesisModule):
@@ -153,6 +205,13 @@ class EconomicIndicatorsThesis(ThesisModule):
             min(30.0, 3.0 / un_reg.rmse) if un_reg and un_reg.rmse >= 1e-6 else 5.0
         )
 
+        # Horizon for one-step forecasts: only contracts whose event month matches
+        # these targets may be scored. See _forecast_target_month_from_training.
+        cpi_forecast_target_month = _forecast_target_month_from_training(features.get("training_df"))
+        un_forecast_target_month = _forecast_target_month_from_training(
+            features.get("unemployment_training_df")
+        )
+
         return {
             # CPI sub-forecast
             "model_probability": cpi_model_probability,
@@ -172,6 +231,7 @@ class EconomicIndicatorsThesis(ThesisModule):
             "backtest": cpi_reg.backtest,
             "model_healthy": cpi_healthy,
             "cpi_forecast_healthy": cpi_forecast_healthy,
+            "cpi_forecast_target_month": cpi_forecast_target_month,
             # Unemployment sub-forecast
             "un_model_probability": unrate_to_yes_probability(
                 un_reg.prediction if un_reg else self.settings.unemployment_threshold_pct,
@@ -180,6 +240,7 @@ class EconomicIndicatorsThesis(ThesisModule):
             ) if un_healthy else None,
             "un_reg": un_reg,
             "un_healthy": un_healthy,
+            "un_forecast_target_month": un_forecast_target_month,
             # Shared
             "market": features["market"],
             "release_date": release_date,
@@ -195,6 +256,8 @@ class EconomicIndicatorsThesis(ThesisModule):
         cpi_healthy: bool = forecast.get("model_healthy", True)
         un_reg = forecast.get("un_reg")
         un_healthy: bool = forecast.get("un_healthy", False)
+        cpi_target_key = _month_key(forecast.get("cpi_forecast_target_month"))
+        un_target_key = _month_key(forecast.get("un_forecast_target_month"))
 
         for contract in forecast["market"]:
             bid = float(contract["best_bid"])
@@ -206,6 +269,10 @@ class EconomicIndicatorsThesis(ThesisModule):
             mid = qa.fair_yes_mid
             spread = qa.spread_bps if qa.spread_bps != float("inf") else _spread_bps(bid, ask)
             contract_type = contract.get("contract_type", "unknown")
+            event_month = _contract_event_month(contract)
+            event_month_key = _month_key(event_month)
+            forecast_target_key: tuple[int, int] | None = None
+            horizon_mismatch = False
 
             if contract_type in _CPI_CONTRACT_TYPES:
                 # Use the contract's own threshold (parsed from the ticker by the
@@ -221,6 +288,7 @@ class EconomicIndicatorsThesis(ThesisModule):
                     pred_cpi, threshold_pct=cpi_contract_threshold, scale=12.0
                 )
                 is_healthy = cpi_healthy
+                forecast_target_key = cpi_target_key
                 reason_extras: dict = {
                     "pred_cpi_mom_pct": round(pred_cpi, 4),
                     "contract_threshold_pct": round(cpi_contract_threshold, 4),
@@ -246,6 +314,7 @@ class EconomicIndicatorsThesis(ThesisModule):
                 else:
                     model_probability = 0.5  # neutral when model is unhealthy
                 is_healthy = un_healthy
+                forecast_target_key = un_target_key
                 reason_extras = {
                     "pred_unrate": round(un_reg.prediction, 3) if un_reg else None,
                     "threshold": round(float(threshold), 1),
@@ -264,11 +333,28 @@ class EconomicIndicatorsThesis(ThesisModule):
                 model_version = "none"
                 feature_version = "none"
 
+            # One-step models only justify the matching event month. Reusing the
+            # same next-month scalar on JUL and NOV ladders creates wrong entries.
+            if (
+                contract_type in _CPI_CONTRACT_TYPES | _UNEMPLOYMENT_CONTRACT_TYPES
+                and forecast_target_key is not None
+                and event_month_key is not None
+                and event_month_key != forecast_target_key
+            ):
+                horizon_mismatch = True
+            if event_month_key is not None:
+                reason_extras["event_month"] = f"{event_month_key[0]:04d}-{event_month_key[1]:02d}"
+            if forecast_target_key is not None:
+                reason_extras["forecast_target_month"] = (
+                    f"{forecast_target_key[0]:04d}-{forecast_target_key[1]:02d}"
+                )
+
             edge_bps = (model_probability - mid) * 10000 if mid is not None else 0.0
 
             quote_unusable = False
             blocked_by_health = False
             blocked_by_policy = False
+            blocked_by_horizon = False
 
             if mid is None or not qa.is_signal_quality:
                 decision = "hold"
@@ -276,6 +362,9 @@ class EconomicIndicatorsThesis(ThesisModule):
             elif not is_healthy:
                 decision = "hold"
                 blocked_by_health = True
+            elif horizon_mismatch:
+                decision = "hold"
+                blocked_by_horizon = True
             elif edge_bps > self.settings.edge_threshold_bps:
                 decision = "enter_long_yes"
             elif edge_bps < (-1 * self.settings.edge_threshold_bps):
@@ -302,6 +391,8 @@ class EconomicIndicatorsThesis(ThesisModule):
             if blocked_by_health:
                 reason_dict["model_healthy"] = False
                 reason_dict["blocked_by_health_gate"] = True
+            if blocked_by_horizon:
+                reason_dict["blocked_by_horizon_mismatch"] = True
             if blocked_by_policy:
                 reason_dict["blocked_by_no_fade_policy"] = True
             if contract.get("is_stub"):

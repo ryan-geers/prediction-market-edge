@@ -2,6 +2,7 @@ import base64
 import logging
 import re
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from src.connectors.base import Connector
@@ -20,6 +21,26 @@ CPI_SERIES = {"KXCPI", "KXMCPI", "CPIM"}
 # Ticker-pattern classifiers used when series_ticker isn't explicitly available.
 _UNRATE_PATTERN = re.compile(r"^(KXU3|KXECONSTATU3)-", re.IGNORECASE)
 _CPI_PATTERN = re.compile(r"(CPI|KXCPI|CPIM)", re.IGNORECASE)
+
+# YYMMM event-month segment in Kalshi econ tickers (e.g. KXCPI-26JUL-T-0.3 → Jul 2026).
+_MONTH_CODES = {
+    "JAN": 1,
+    "FEB": 2,
+    "MAR": 3,
+    "APR": 4,
+    "MAY": 5,
+    "JUN": 6,
+    "JUL": 7,
+    "AUG": 8,
+    "SEP": 9,
+    "OCT": 10,
+    "NOV": 11,
+    "DEC": 12,
+}
+_EVENT_MONTH_RE = re.compile(
+    r"(?:^|-)(\d{2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(?:-|$)",
+    re.IGNORECASE,
+)
 
 # Ordered lists of series ticker candidates to try for each contract type.
 _CPI_SERIES_CANDIDATES = ["KXCPI", "KXMCPI", "CPIM", "CPI"]
@@ -80,6 +101,24 @@ def _parse_threshold(ticker: str) -> float | None:
         except ValueError:
             pass
     return None
+
+
+def _parse_event_month(ticker: str) -> datetime | None:
+    """
+    Extract the contract event month from a Kalshi ticker as month-start UTC.
+
+    Examples:
+      KXU3-26MAY-T4.8              → 2026-05-01
+      KXCPI-26JUL-T-0.3            → 2026-07-01
+      KXECONSTATU3-26NOV-T5.5      → 2026-11-01
+      CPI-MAY-OVER-0.3             → None (no year segment)
+    """
+    m = _EVENT_MONTH_RE.search(ticker or "")
+    if not m:
+        return None
+    year = 2000 + int(m.group(1))
+    month = _MONTH_CODES[m.group(2).upper()]
+    return datetime(year, month, 1, tzinfo=timezone.utc)
 
 
 def _build_rsa_signature(private_key_pem: str, timestamp_ms: str, method: str, path: str) -> str:
@@ -180,6 +219,7 @@ class KalshiConnector(Connector):
             else _classify_by_ticker(ticker)
         )
 
+        event_month = _parse_event_month(ticker)
         return {
             "venue": "kalshi",
             "contract_id": ticker,
@@ -190,6 +230,8 @@ class KalshiConnector(Connector):
             "series_ticker": resolved_series,
             "contract_type": contract_type,
             "threshold": _parse_threshold(ticker),
+            # ISO month-start used by generate_signals horizon gating.
+            "event_month": event_month.date().isoformat() if event_month else None,
         }
 
     def parse_markets(self, payload: dict[str, Any], series_ticker: str = "") -> list[dict[str, Any]]:
@@ -329,6 +371,7 @@ class KalshiConnector(Connector):
                 "series_ticker": "KXCPI",
                 "contract_type": "cpi",
                 "threshold": 0.3,
+                "event_month": None,
                 "is_stub": True,
             },
             {
@@ -341,6 +384,7 @@ class KalshiConnector(Connector):
                 "series_ticker": "KXU3",
                 "contract_type": "unemployment",
                 "threshold": 4.2,
+                "event_month": "2026-05-01",
                 "is_stub": True,
             },
         ]
