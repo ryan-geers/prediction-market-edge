@@ -258,6 +258,67 @@ def test_apply_exits_exit_on_flip_disabled():
     assert closes == []
 
 
+def test_apply_exits_skips_flip_on_horizon_mismatch_hold():
+    """
+    Horizon holds still carry a large computed edge_bps from the one-step forecast
+    applied to a non-matching month. Rule A must not treat that as a real flip.
+    """
+    import json
+
+    settings = Settings(edge_threshold_bps=300, paper_exit_on_flip=True)
+    pos = _open_position(
+        contract_id="KXCPI-26NOV-T0.3",
+        direction="yes",
+        avg_entry_price=0.40,
+        net_qty=50.0,
+    )
+    hold_signal = _base_signal().model_copy(
+        update={
+            "contract_id": "KXCPI-26NOV-T0.3",
+            "decision": "hold",
+            "edge_bps": -2500.0,
+            "market_implied_probability": 0.55,
+            "decision_reason": json.dumps(
+                {
+                    "contract_type": "cpi",
+                    "blocked_by_horizon_mismatch": True,
+                    "event_month": "2026-11",
+                    "forecast_target_month": "2026-07",
+                    "quote_quality": "two_sided",
+                }
+            ),
+        }
+    )
+    snap = _snapshot(contract_id="KXCPI-26NOV-T0.3", mid_price=0.55)
+    closes = apply_exits([pos], [hold_signal], [snap], settings)
+    assert closes == []
+
+
+def test_apply_exits_skips_flip_on_health_gate_hold():
+    """Unhealthy-model holds must not liquidate open positions via signal_flip."""
+    import json
+
+    settings = Settings(edge_threshold_bps=300, paper_exit_on_flip=True)
+    pos = _open_position(direction="yes", avg_entry_price=0.50, net_qty=40.0)
+    hold_signal = _base_signal().model_copy(
+        update={
+            "decision": "hold",
+            "edge_bps": -1800.0,
+            "decision_reason": json.dumps(
+                {
+                    "contract_type": "cpi",
+                    "model_healthy": False,
+                    "blocked_by_health_gate": True,
+                    "quote_quality": "two_sided",
+                }
+            ),
+        }
+    )
+    snap = _snapshot(mid_price=0.60)
+    closes = apply_exits([pos], [hold_signal], [snap], settings)
+    assert closes == []
+
+
 # ── Phase 3: apply_dedup tests ─────────────────────────────────────────────────
 
 def _make_position(
