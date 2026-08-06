@@ -44,6 +44,7 @@ def test_kalshi_normalization():
     assert row["contract_type"] == "unemployment"
     assert row["threshold"] == 4.8
     assert row["series_ticker"] == "KXU3"
+    assert row["event_month"] == "2026-05-01"
 
 
 def test_kalshi_normalization_cpi():
@@ -52,6 +53,18 @@ def test_kalshi_normalization_cpi():
     assert row["contract_type"] == "cpi"
     # _parse_threshold now extracts the threshold from the OVER-{value} format.
     assert row["threshold"] == pytest.approx(0.3)
+    # Legacy month-only tickers have no YYMMM segment.
+    assert row["event_month"] is None
+
+
+def test_kalshi_parse_event_month_yymmm():
+    from src.connectors.kalshi import _parse_event_month
+
+    jul = _parse_event_month("KXCPI-26JUL-T-0.3")
+    nov = _parse_event_month("KXECONSTATU3-26NOV-T5.5")
+    assert jul is not None and (jul.year, jul.month) == (2026, 7)
+    assert nov is not None and (nov.year, nov.month) == (2026, 11)
+    assert _parse_event_month("CPI-MAY-OVER-0.3") is None
 
 
 def test_kalshi_normalization_preserves_zero_dollar_prices():
