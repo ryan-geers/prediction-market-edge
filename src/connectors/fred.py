@@ -2,17 +2,23 @@ import logging
 from typing import Any
 
 from src.connectors.base import Connector
+from src.connectors.history_utils import expand_sparse_history_to_monthly
 
 LOGGER = logging.getLogger(__name__)
 
 
-# Synthetic 10-year monthly history for PPIACO, UNRATE, and CPIAUCSL.
+# Synthetic 10-year *quarterly anchors* for PPIACO, UNRATE, and CPIAUCSL.
+# Expanded to true monthly history via time interpolation before use.
 # Used when the FRED API is unavailable (no key, network error, etc.).
 # Values approximate the actual FRED series trajectory for 2016-2026 and
 # are sufficient for the training-window requirements of both models:
 #   • CPI OLS needs ≥ 8 rows with all three feature cols + CPIAUCSL target
 #   • UNRATE AR needs ≥ 16 monthly rows
-_FRED_FALLBACK_HISTORY: list[dict] = [
+#
+# IMPORTANT: do not return these anchors raw. Quarterly spacing + the model's
+# month-start ffill creates ~2/3 exact-zero CPI MoM training labels and can
+# flip enter_long_yes/no decisions versus a monthly series.
+_FRED_FALLBACK_ANCHORS: list[dict] = [
     # fmt: off
     # PPIACO (Producer Price Index, All Commodities) — monthly levels
     {"series": "PPIACO", "value": 183.2, "date": "2016-01-01"},
@@ -145,6 +151,9 @@ _FRED_FALLBACK_HISTORY: list[dict] = [
     {"series": "CPIAUCSL", "value": 319.2, "date": "2026-04-01"},
     # fmt: on
 ]
+
+# True monthly fallback consumed by fetch_history() when the API is unavailable.
+_FRED_FALLBACK_HISTORY: list[dict] = expand_sparse_history_to_monthly(_FRED_FALLBACK_ANCHORS)
 
 
 class FredConnector(Connector):

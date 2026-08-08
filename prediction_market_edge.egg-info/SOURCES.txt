@@ -14,6 +14,7 @@ src/connectors/base.py
 src/connectors/bea.py
 src/connectors/bls.py
 src/connectors/fred.py
+src/connectors/history_utils.py
 src/connectors/kalshi.py
 src/connectors/polymarket.py
 src/core/__init__.py
