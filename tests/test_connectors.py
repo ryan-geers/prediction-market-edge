@@ -23,6 +23,37 @@ def test_fred_fallback_data():
     assert any(row["series"] == "PPIACO" for row in rows)
 
 
+def test_fred_fallback_history_is_monthly_not_quarterly():
+    """No-key / failed FRED history must be monthly so CPI MoM labels are not mostly zero."""
+    from datetime import datetime
+
+    from src.connectors.fred import _FRED_FALLBACK_HISTORY
+    from src.theses.economic_indicators.model import build_training_frame_from_history
+
+    cpi_dates = sorted(
+        datetime.strptime(r["date"], "%Y-%m-%d")
+        for r in _FRED_FALLBACK_HISTORY
+        if r["series"] == "CPIAUCSL"
+    )
+    assert len(cpi_dates) >= 100
+    gaps_days = [(b - a).days for a, b in zip(cpi_dates, cpi_dates[1:])]
+    assert max(gaps_days) <= 31
+
+    connector = FredConnector(api_key=None)
+    connector.fetch_series_history = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("fail"))  # type: ignore[method-assign]
+    hist = connector.fetch_history()
+    assert hist is _FRED_FALLBACK_HISTORY or hist == _FRED_FALLBACK_HISTORY
+
+    bea = BeaConnector(api_key=None).fetch_history()
+    frame = build_training_frame_from_history(
+        hist + bea,
+        {"PPIACO": 269.4, "PCEPI": 132.9, "UNRATE": 4.2},
+    )
+    zero_labels = int((frame["cpi_mom_next"].abs() < 1e-12).sum())
+    # Quarterly anchors previously produced ~79/119 exact-zero labels.
+    assert zero_labels <= 2
+
+
 def test_bls_fallback_data():
     connector = BlsConnector()
     connector.http_client.session.post = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("fail"))  # type: ignore[method-assign]
@@ -34,6 +65,33 @@ def test_bea_fallback_without_api_key():
     connector = BeaConnector(api_key=None)
     rows = connector.fetch()
     assert rows[0]["series"] == "PCEPI"
+    assert rows[0]["value"] == pytest.approx(132.9)
+
+
+def test_bea_fallback_history_has_no_pcepi_cliff():
+    """No-key BEA history must not append the old 123.4 stub after ~132.6."""
+    from src.connectors.history_utils import expand_sparse_history_to_monthly
+
+    history = BeaConnector(api_key=None).fetch_history()
+    assert len(history) >= 100
+    values = [r["value"] for r in history]
+    assert min(values[-6:]) > 130.0
+    assert all(abs(v - 123.4) > 1e-9 for v in values)
+    # Anchors expand to month-start cadence.
+    dates = [r["date"] for r in history]
+    assert dates == sorted(dates)
+    expanded = expand_sparse_history_to_monthly(
+        [
+            {"series": "PCEPI", "value": 100.0, "date": "2020-01-01"},
+            {"series": "PCEPI", "value": 103.0, "date": "2020-04-01"},
+        ]
+    )
+    assert [r["date"] for r in expanded] == [
+        "2020-01-01",
+        "2020-02-01",
+        "2020-03-01",
+        "2020-04-01",
+    ]
 
 
 def test_kalshi_normalization():
