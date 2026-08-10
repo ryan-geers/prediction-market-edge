@@ -8,9 +8,18 @@ on:
     - cron: "0 5,11,17,23 * * *"
 
 # Shared pipeline logic with local: `pme run` then report helpers; artifacts restore/persist state on ephemeral runners.
+#
+# State continuity hazard: cache keys are per-run (`pme-state-${{ github.run_id }}`) with
+# restore-keys `pme-state-`. A total cache miss (or a poisoned empty DB restored as the
+# newest prefix match) would let `pme consolidate-positions` / `Storage.__init__` create a
+# fresh DuckDB, then `pme-db-latest` overwrite:true + cache/save would permanently wipe
+# paper history. Guard + artifact recovery below prevent that.
 jobs:
   run:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     env:
       FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
       BLS_API_KEY: ${{ secrets.BLS_API_KEY }}
@@ -32,8 +41,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      # restore-only: do NOT use actions/cache@v4 here — that action auto-saves on
+      # primary-key miss at job end and would re-poison pme-state-* after an empty bootstrap.
       - name: Restore prior data
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             data/pme.duckdb
@@ -41,6 +52,60 @@ jobs:
           key: pme-state-${{ github.run_id }}
           restore-keys: |
             pme-state-
+
+      # Refuse to bootstrap an empty DuckDB on cache miss: Storage() creates schema-only
+      # files, and the later overwrite of pme-db-latest would destroy recoverable history.
+      - name: Ensure DuckDB history before mutating state
+        id: db_guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ALLOW_EMPTY: ${{ vars.PME_ALLOW_EMPTY_DB_BOOTSTRAP || '' }}
+        run: |
+          set -euo pipefail
+
+          db_has_history() {
+            if [ ! -f data/pme.duckdb ]; then
+              return 1
+            fi
+            # Age is irrelevant here — any prior run_manifest row means history exists.
+            pme check-state --max-run-age-days 36500
+          }
+
+          if db_has_history; then
+            echo "has_history=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "::warning::DuckDB missing or empty after cache restore — attempting pme-db-latest artifact recovery"
+
+          # Drop a schema-only / poisoned file so we do not keep writing into it.
+          rm -f data/pme.duckdb
+          mkdir -p /tmp/pme-db-latest-restore
+          if gh run download --name pme-db-latest --dir /tmp/pme-db-latest-restore --repo "${{ github.repository }}"; then
+            if [ -f /tmp/pme-db-latest-restore/pme.duckdb ]; then
+              mkdir -p data
+              mv /tmp/pme-db-latest-restore/pme.duckdb data/pme.duckdb
+            elif [ -f /tmp/pme-db-latest-restore/data/pme.duckdb ]; then
+              mkdir -p data
+              mv /tmp/pme-db-latest-restore/data/pme.duckdb data/pme.duckdb
+            fi
+          fi
+
+          if db_has_history; then
+            echo "Recovered DuckDB history from pme-db-latest artifact"
+            echo "has_history=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "${ALLOW_EMPTY}" = "true" ]; then
+            echo "::warning::PME_ALLOW_EMPTY_DB_BOOTSTRAP=true — continuing with empty DuckDB bootstrap"
+            echo "has_history=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "::error title=PME state missing::Cache miss/empty DuckDB and pme-db-latest recovery failed. Refusing to create a fresh DB (would overwrite pme-db-latest and poison pme-state-* cache). Set repo variable PME_ALLOW_EMPTY_DB_BOOTSTRAP=true only for intentional first-time bootstrap."
+          echo "has_history=false" >> "$GITHUB_OUTPUT"
+          exit 1
 
       - name: Consolidate duplicate positions
         run: |
@@ -61,7 +126,20 @@ jobs:
       - name: Prune old run_report archives
         run: pme prune-reports --dir data/reports --keep 48
 
+      - name: Verify DuckDB still has history before persisting
+        id: db_persist_ok
+        run: |
+          set -euo pipefail
+          if pme check-state --max-run-age-days 36500; then
+            echo "persist=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Post-run DuckDB has empty run_manifest — refusing to save cache / overwrite pme-db-latest"
+            echo "persist=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
       - name: Save state to cache
+        if: steps.db_persist_ok.outputs.persist == 'true'
         uses: actions/cache/save@v4
         with:
           path: |
@@ -74,6 +152,7 @@ jobs:
       # Recovery: download this artifact and place pme.duckdb at data/pme.duckdb
       # before triggering the next pipeline run to restore accumulated history.
       - name: Upload rolling DB snapshot
+        if: steps.db_persist_ok.outputs.persist == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: pme-db-latest

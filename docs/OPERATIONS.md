@@ -20,6 +20,7 @@ Rotate SMTP credentials on your provider after a leak or personnel change; updat
 - **`PME_EMAIL_DRY_RUN`**: set to `true` to skip SMTP on **scheduled** weekly runs while still generating artifacts.
 - Manual `workflow_dispatch` on the weekly workflow also exposes a **Dry run** checkbox.
 - **`PME_SKIP_WEEKLY_FRESHNESS_CHECK`**: set to `true` to bypass `pme check-state` in the weekly job (not recommended for production).
+- **`PME_ALLOW_EMPTY_DB_BOOTSTRAP`**: set to `true` only for intentional first-time pipeline bootstrap when no `pme-state-*` cache and no `pme-db-latest` artifact exist. Default (unset) makes `run-pipeline.yml` fail closed on cache miss so an empty DuckDB cannot overwrite history.
 
 ## Weekly digest freshness gate
 

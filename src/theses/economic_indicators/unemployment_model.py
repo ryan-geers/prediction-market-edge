@@ -20,7 +20,9 @@ import pandas as pd
 
 LOGGER = logging.getLogger(__name__)
 
-UNRATE_SERIES = {"UNRATE", "LNS14000000"}
+# Accepted unemployment rate series aliases (FRED / BLS). Prefer UNRATE when both
+# are present — never merge them with resample(...).last() (see build frame).
+_UNRATE_SERIES_PRIORITY = ("UNRATE", "LNS14000000")
 MIN_TRAIN_ROWS = 12  # need at least 12 months to compute lag-3 + trend
 
 
@@ -69,7 +71,17 @@ def build_unemployment_training_frame(
             frame["value"] = pd.to_numeric(frame["value"], errors="coerce")
             frame = frame.dropna(subset=["date", "value"])
 
-            unrate_rows = frame[frame["series"].isin(UNRATE_SERIES)]
+            # Prefer a single canonical series. Ingest concatenates FRED UNRATE and
+            # BLS LNS14000000; merging both into one Series and taking
+            # resample("MS").last() lets a short BLS history fallback (2 stale
+            # points) overwrite good FRED months and inject fake cliffs that flip
+            # KXU3 YES/NO paper decisions.
+            unrate_rows = pd.DataFrame()
+            for series_name in _UNRATE_SERIES_PRIORITY:
+                candidate = frame[frame["series"] == series_name]
+                if not candidate.empty:
+                    unrate_rows = candidate
+                    break
             if not unrate_rows.empty:
                 series = (
                     unrate_rows.set_index("date")["value"]
