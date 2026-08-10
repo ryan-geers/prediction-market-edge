@@ -64,6 +64,48 @@ def test_frame_accepts_lns_series_name():
     assert len(df) > 0
 
 
+def test_frame_prefers_fred_unrate_over_bls_fallback_cliff():
+    """BLS 2-point history fallback must not overwrite FRED UNRATE months.
+
+    Production ingest concatenates fred.fetch_history() + bls.fetch_history().
+    When BLS fails it returns a 2-point LNS14000000 stub; merging both series
+    via resample(...).last() previously replaced FRED's 2026-03 print with 4.0
+    and flipped KXU3 enter_long_yes/no around the 4.2 strike.
+    """
+    fred_rows = _make_history(36, base=4.2)
+    # Ensure a known March-2026 FRED print that differs from the BLS stub.
+    fred_rows = [r for r in fred_rows if not str(r["date"]).startswith("2026-03")]
+    fred_rows.append({"series": "UNRATE", "value": 4.34, "date": "2026-03-01"})
+    bls_fallback = [
+        {"series": "LNS14000000", "value": 4.3, "date": "2025-01-01"},
+        {"series": "LNS14000000", "value": 4.0, "date": "2026-03-01"},
+    ]
+
+    df_fred = build_unemployment_training_frame(fred_rows)
+    df_merged = build_unemployment_training_frame(fred_rows + bls_fallback)
+
+    fred_tip = float(
+        df_fred.set_index("release_date")["unrate_t"].loc["2026-03-01":"2026-03-01"].iloc[0]
+    )
+    merged_tip = float(
+        df_merged.set_index("release_date")["unrate_t"].loc["2026-03-01":"2026-03-01"].iloc[0]
+    )
+    assert fred_tip == pytest.approx(4.34)
+    assert merged_tip == pytest.approx(4.34)
+
+    reg_fred = train_validate_predict_unemployment(df_fred)
+    reg_merged = train_validate_predict_unemployment(df_merged)
+    assert reg_merged.prediction == pytest.approx(reg_fred.prediction, abs=1e-9)
+
+    # Same paper decision at the common 4.2 strike / mid that previously flipped.
+    mid = 0.45
+    for reg in (reg_fred, reg_merged):
+        scale = min(30.0, 3.0 / reg.rmse) if reg.rmse >= 1e-6 else 5.0
+        p = unrate_to_yes_probability(reg.prediction, threshold=4.2, scale=scale)
+        edge = (p - mid) * 10000
+        assert edge > 300  # enter_long_yes — not flipped to NO by the BLS cliff
+
+
 # --- train_validate_predict_unemployment ---
 
 def test_model_produces_sensible_prediction():
