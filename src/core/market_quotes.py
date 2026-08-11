@@ -107,7 +107,10 @@ def assess_yes_quote(
         )
 
     # One-sided with a plausible ask (bid missing but ask not pinned at $1).
-    if bid < min_bid and min_ask < ask <= max_one_sided_ask:
+    # Use inclusive lower bound (ask >= min_ask): ask == min_ask with bid=0 still
+    # has a 20,000 bps effective spread. A strict `min_ask < ask` let penny asks
+    # (bid=0, ask=0.01) fall through to last_trade_fallback and emit enter signals.
+    if bid < min_bid and min_ask <= ask <= max_one_sided_ask:
         # Effective spread with bid=0 is always 20,000 bps regardless of ask level.
         # Apply the same hard cap used for two-sided wide markets: if the spread
         # exceeds max_spread_hard the contract is too illiquid to enter (no exit
