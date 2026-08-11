@@ -45,6 +45,21 @@ def test_one_sided_low_ask_blocked_by_hard_cap():
     assert executable_yes_exit_price(qa, "yes") is None
 
 
+def test_one_sided_ask_equal_to_min_ask_blocked_by_hard_cap():
+    """Production hole: bid=0, ask==min_ask (0.01) with a last trade.
+
+    A strict `min_ask < ask` gate skipped the one-sided hard-cap path and
+    fell through to last_trade_fallback (is_signal_quality=True), so
+    KXECONSTATU3/KXCPI ladders with penny asks kept emitting enter_long_yes.
+    """
+    qa = assess_yes_quote(0.0, 0.01, 0.02, _settings())
+    assert qa.quality == "unusable_one_sided_hard_cap"
+    assert not qa.is_signal_quality
+    assert not qa.is_exit_quality
+    assert qa.fair_yes_mid == 0.02  # last trade still available for marks
+    assert executable_yes_exit_price(qa, "yes") is None
+
+
 def test_one_sided_low_ask_allows_signal_when_hard_cap_relaxed():
     """When market_max_spread_bps_hard is raised above 20,000 bps, one-sided
     books with a plausible ask are still allowed as signals (ask proxy)."""
