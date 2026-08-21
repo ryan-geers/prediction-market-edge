@@ -22,6 +22,7 @@ class BeaConnector(Connector):
             "method": "GetData",
             "datasetname": "NIPA",
             "TableName": "T20805",
+            # Not a NIPA GetData filter (API ignores it); parser keeps line 1.
             "LineNumber": "1",
             "Frequency": "M",
             "Year": "X",
@@ -91,6 +92,7 @@ class BeaConnector(Connector):
             "method": "GetData",
             "datasetname": "NIPA",
             "TableName": "T20805",
+            # Not a NIPA GetData filter (API ignores it); parser keeps line 1.
             "LineNumber": "1",
             "Frequency": "M",
             "Year": "X",
@@ -107,11 +109,29 @@ class BeaConnector(Connector):
             ]
 
     @staticmethod
+    def _is_headline_line(row: dict[str, Any]) -> bool:
+        """Keep NIPA line 1 (headline PCE / PCEPI).
+
+        NIPA ``GetData`` only accepts TableName / Frequency / Year — ``LineNumber``
+        on the request is ignored, so the API returns every line of the table.
+        Without this filter every component (gasoline, durables, …) is labeled
+        ``PCEPI`` and ``pivot_table(..., aggfunc="last")`` silently trains on
+        whichever line arrived last.
+        """
+        raw = row.get("LineNumber")
+        if raw is None or str(raw).strip() == "":
+            # Fixtures and already-filtered payloads omit LineNumber.
+            return True
+        return str(raw).strip() in {"1", "1.0"}
+
+    @staticmethod
     def parse_response(data: dict[str, Any]) -> list[dict[str, Any]]:
         rows = data.get("BEAAPI", {}).get("Results", {}).get("Data", [])
-        if not rows:
+        headline = [row for row in rows if BeaConnector._is_headline_line(row)]
+        if not headline:
             return []
-        latest = rows[-1]
+        headline.sort(key=lambda row: str(row.get("TimePeriod", "")))
+        latest = headline[-1]
         raw_val = str(latest.get("DataValue", "")).replace(",", "")
         if not raw_val:
             return []
@@ -122,6 +142,8 @@ class BeaConnector(Connector):
         rows = data.get("BEAAPI", {}).get("Results", {}).get("Data", [])
         out: list[dict[str, Any]] = []
         for row in rows:
+            if not BeaConnector._is_headline_line(row):
+                continue
             raw_val = str(row.get("DataValue", "")).replace(",", "")
             period = str(row.get("TimePeriod", ""))
             if not raw_val or len(period) != 7 or "M" not in period:

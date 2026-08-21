@@ -148,6 +148,52 @@ def test_bea_parse_history_fixture():
     assert rows[-1]["date"] == "2026-03-01"
 
 
+def test_bea_parse_keeps_only_headline_line():
+    """NIPA GetData ignores request LineNumber and returns every table line.
+
+    Gasoline (line 11) arriving after headline PCE (line 1) must not become PCEPI.
+    """
+    payload = {
+        "BEAAPI": {
+            "Results": {
+                "Data": [
+                    {
+                        "LineNumber": "1",
+                        "LineDescription": "Personal consumption expenditures",
+                        "TimePeriod": "2026M02",
+                        "DataValue": "123.0",
+                    },
+                    {
+                        "LineNumber": "11",
+                        "LineDescription": "Gasoline and other energy goods",
+                        "TimePeriod": "2026M02",
+                        "DataValue": "250.0",
+                    },
+                    {
+                        "LineNumber": "1",
+                        "LineDescription": "Personal consumption expenditures",
+                        "TimePeriod": "2026M03",
+                        "DataValue": "123.8",
+                    },
+                    {
+                        "LineNumber": "11",
+                        "LineDescription": "Gasoline and other energy goods",
+                        "TimePeriod": "2026M03",
+                        "DataValue": "255.0",
+                    },
+                ]
+            }
+        }
+    }
+    history = BeaConnector.parse_history_response(payload)
+    assert [(r["date"], r["value"]) for r in history] == [
+        ("2026-02-01", 123.0),
+        ("2026-03-01", 123.8),
+    ]
+    latest = BeaConnector.parse_response(payload)
+    assert latest == [{"series": "PCEPI", "value": 123.8, "period": "2026M03"}]
+
+
 def test_kalshi_parse_markets_fixture():
     connector = KalshiConnector()
     rows = connector.parse_markets(_load_json("kalshi_markets.json"))
