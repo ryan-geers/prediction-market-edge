@@ -70,6 +70,13 @@ def assess_yes_quote(
             return None
         if lt <= min_bid or lt >= 1.0 - min_bid:
             return None
+        # A last print through the live book is stale, not a fair mid. Using it
+        # on wide two-sided books (spread in (max_spread, max_spread_hard)) made
+        # KXU3-26SEP-T4.3 oscillate every run: last_trade=0.24 with bid/ask
+        # 0.31/0.37 → enter YES, then a 1¢ bid tick made the book two-sided at
+        # mid 0.345 → flip to NO, realizing round-trip losses.
+        if bid >= min_bid and ask >= min_ask and ask > bid and (lt < bid or lt > ask):
+            return None
         return lt
 
     two_sided = (

@@ -77,3 +77,39 @@ def test_executable_yes_exit_uses_bid():
     qa = assess_yes_quote(0.48, 0.52, None, _settings())
     assert executable_yes_exit_price(qa, "yes") == 0.48
     assert executable_yes_exit_price(qa, "no") == 0.48  # 1 - 0.52
+
+
+def test_stale_last_trade_outside_live_book_is_not_fair_mid():
+    """Production KXU3-26SEP-T4.3: last_trade=0.24 with bid=0.31/ask=0.37.
+
+    Spread is 1765 bps (between 1500 and 5000), so the wide-spread last-trade
+    rescue used to treat 0.24 as fair mid → enter YES. The next run's 1¢ bid
+    tick made the same book two-sided at mid 0.345 → flip to NO.
+    """
+    qa = assess_yes_quote(0.31, 0.37, 0.24, _settings())
+    assert qa.quality == "unusable_wide_spread"
+    assert qa.fair_yes_mid is None
+    assert not qa.is_signal_quality
+    assert not qa.is_exit_quality
+    qa_high = assess_yes_quote(0.31, 0.37, 0.50, _settings())
+    assert qa_high.quality == "unusable_wide_spread"
+    assert qa_high.fair_yes_mid is None
+
+
+def test_last_trade_inside_wide_spread_still_usable():
+    """A last print that sits inside the live bid/ask is still a valid mid
+    when the spread is wide but under the hard cap."""
+    qa = assess_yes_quote(0.31, 0.37, 0.34, _settings())
+    assert qa.quality == "last_trade_wide_spread"
+    assert qa.fair_yes_mid == 0.34
+    assert qa.is_signal_quality
+    assert qa.is_exit_quality
+
+
+def test_last_trade_at_bid_or_ask_is_inside_book():
+    qa_bid = assess_yes_quote(0.31, 0.37, 0.31, _settings())
+    assert qa_bid.quality == "last_trade_wide_spread"
+    assert qa_bid.fair_yes_mid == 0.31
+    qa_ask = assess_yes_quote(0.31, 0.37, 0.37, _settings())
+    assert qa_ask.quality == "last_trade_wide_spread"
+    assert qa_ask.fair_yes_mid == 0.37
