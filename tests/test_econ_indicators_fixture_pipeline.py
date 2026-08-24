@@ -99,3 +99,46 @@ def test_signal_block_long_no_when_model_favors_yes(tmp_path: Path) -> None:
     assert len(signals) == 1
     assert signals[0].decision == "hold"
     assert "blocked_by_no_fade_policy" in signals[0].decision_reason
+
+
+def test_stale_last_trade_outside_live_book_holds(tmp_path: Path) -> None:
+    """KXU3-26SEP-T4.3 production quote: last_trade=0.24 is below bid=0.31.
+
+    Pre-fix this was last_trade_wide_spread with fair mid 0.24 → enter_long_yes,
+    then a 1¢ bid tick flipped the same book to two-sided NO. Stale prints
+    through the live book must not be signal-quality.
+    """
+    settings = Settings(
+        duckdb_path=tmp_path / "db.duckdb",
+        data_dir=tmp_path,
+        edge_threshold_bps=300,
+    )
+    thesis = EconomicIndicatorsThesis(settings)
+    fc = {
+        "market": [
+            {
+                "venue": "kalshi",
+                "contract_id": "KXU3-26SEP-T4.3",
+                "label": "Unemployment above 4.3%",
+                "best_bid": 0.31,
+                "best_ask": 0.37,
+                "last_trade": 0.24,
+                "contract_type": "unemployment",
+                "threshold": 4.3,
+            }
+        ],
+        "model_probability": 0.3025,
+        "predicted_cpi_mom_pct": 0.2,
+        "validation_rmse": 0.12,
+        "walk_forward_val_rmse": 0.12,
+        "macro_history_count": 100,
+        "model_healthy": True,
+        "un_reg": None,
+        "un_healthy": False,
+    }
+    signals, _ = thesis.generate_signals("r-stale-lt", fc)
+    assert len(signals) == 1
+    assert signals[0].decision == "hold"
+    reason = json.loads(signals[0].decision_reason)
+    assert reason["quote_unusable"] is True
+    assert reason["quote_quality"] == "unusable_wide_spread"
