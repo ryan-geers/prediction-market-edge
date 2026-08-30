@@ -90,6 +90,36 @@ def test_simulate_paper_trades_sets_direction():
     assert positions[1].direction == "no"
 
 
+def test_simulate_paper_trades_skips_no_entry_without_yes_bid():
+    """A missing YES bid means there is no executable NO ask to lift."""
+    s_no = _base_signal().model_copy(
+        update={
+            "decision": "enter_long_no",
+            "edge_bps": -1200.0,
+            "contract_id": "CPI-NO-ONE-SIDED",
+            "market_implied_probability": 0.55,
+            "bid_price": 0.0,
+            "ask_price": 0.55,
+            "spread_bps": 20000.0,
+        }
+    )
+    orders, positions = simulate_paper_trades([s_no], Settings())
+    assert orders == []
+    assert positions == []
+
+
+def test_simulate_paper_trades_no_entry_uses_yes_bid_touch():
+    s_no = _base_signal().model_copy(
+        update={"decision": "enter_long_no", "edge_bps": -1200.0, "contract_id": "CPI-NO"}
+    )
+    settings = Settings(paper_slippage_bps=25.0)
+    orders, positions = simulate_paper_trades([s_no], settings)
+    assert len(orders) == 1
+    assert len(positions) == 1
+    assert orders[0].side == "no"
+    assert abs(orders[0].fill_price - ((1.0 - s_no.bid_price) * 1.0025)) < 1e-9
+
+
 def test_paper_trading_skips_hold():
     s = _base_signal()
     s = s.model_copy(update={"decision": "hold"})

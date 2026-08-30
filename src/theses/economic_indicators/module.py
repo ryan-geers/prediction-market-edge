@@ -269,6 +269,7 @@ class EconomicIndicatorsThesis(ThesisModule):
             quote_unusable = False
             blocked_by_health = False
             blocked_by_policy = False
+            blocked_by_no_entry_quote = False
 
             if mid is None or not qa.is_signal_quality:
                 decision = "hold"
@@ -279,7 +280,11 @@ class EconomicIndicatorsThesis(ThesisModule):
             elif edge_bps > self.settings.edge_threshold_bps:
                 decision = "enter_long_yes"
             elif edge_bps < (-1 * self.settings.edge_threshold_bps):
-                decision = "enter_long_no"
+                if qa.yes_bid_for_exit <= 0:
+                    decision = "hold"
+                    blocked_by_no_entry_quote = True
+                else:
+                    decision = "enter_long_no"
             else:
                 decision = "hold"
 
@@ -304,6 +309,8 @@ class EconomicIndicatorsThesis(ThesisModule):
                 reason_dict["blocked_by_health_gate"] = True
             if blocked_by_policy:
                 reason_dict["blocked_by_no_fade_policy"] = True
+            if blocked_by_no_entry_quote:
+                reason_dict["blocked_by_no_entry_quote"] = True
             if contract.get("is_stub"):
                 reason_dict["data_source"] = "kalshi_stub"
 
