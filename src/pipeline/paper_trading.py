@@ -281,16 +281,17 @@ def apply_dedup(
             continue
 
         key = (pos.contract_id, pos.venue, pos.direction)
+        existing = existing_by_key.get(key)
 
-        # Count-based guard: block if total open rows (including null-direction legacy
-        # entries) already meets the configured ceiling.
-        if open_counts_by_key is not None:
+        # Count-based guard: block only new rows if total open rows (including
+        # null-direction legacy entries) already meets the configured ceiling.
+        # A VWAP add-to does not create another open row, so it must still be
+        # allowed when paper_allow_add_to_position=True.
+        if existing is None and open_counts_by_key is not None:
             total_open = (open_counts_by_key.get(key, 0)
                           + open_counts_by_key.get((pos.contract_id, pos.venue, ""), 0))
             if total_open >= max_open:
                 continue
-
-        existing = existing_by_key.get(key)
 
         if existing is None:
             # Portfolio-level cap: don't open new positions when the book is full.
