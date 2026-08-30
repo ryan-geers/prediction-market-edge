@@ -283,6 +283,11 @@ class EconomicIndicatorsThesis(ThesisModule):
             else:
                 decision = "hold"
 
+            if decision == "enter_long_no" and qa.yes_bid_for_exit <= 0:
+                decision = "hold"
+                quote_unusable = True
+                reason_extras["no_executable_no_ask"] = True
+
             if (
                 self.settings.signal_block_long_no_when_model_favors_yes
                 and decision == "enter_long_no"

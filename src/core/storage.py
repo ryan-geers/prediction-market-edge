@@ -392,7 +392,8 @@ class Storage:
         the quote is too broken to mark (e.g. bid=0 for a long YES).
 
         ``mark_price`` in the DB always stores the YES-side reference used by the
-        unrealized PnL formula in :meth:`add_to_position`.
+        unrealized PnL formula in :meth:`add_to_position`. ``quote_reliable=False``
+        prevents fallback mids from overwriting existing marks.
         """
         updated = 0
         min_bid = 0.01
@@ -404,7 +405,11 @@ class Storage:
                 # fair_mid is used as YES fallback when bid is 0 (e.g. near-certain contracts
                 # whose YES side is so likely that nobody posts a bid, but last_trade is still
                 # meaningful). Without this, these positions are never re-marked.
-                fair_mid = float(mark.mark_price) if mark.mark_price is not None else None
+                fair_mid = (
+                    float(mark.mark_price)
+                    if mark.quote_reliable and mark.mark_price is not None
+                    else None
+                )
                 rows = self.con.execute(
                     """
                     UPDATE paper_positions
@@ -461,7 +466,7 @@ class Storage:
                         fair_mid,                     # NULL direction
                     ],
                 ).fetchall()
-            else:
+            elif mark.quote_reliable:
                 rows = self.con.execute(
                     """
                     UPDATE paper_positions
@@ -487,6 +492,8 @@ class Storage:
                         mark.venue,
                     ],
                 ).fetchall()
+            else:
+                rows = []
             updated += len(rows)
         return updated
 
