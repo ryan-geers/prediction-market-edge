@@ -118,6 +118,37 @@ def test_mark_multiple_contracts(tmp_path: Path) -> None:
     assert abs(rows["pos-b"][1] - (-0.50)) < 1e-9
 
 
+def test_unreliable_empty_book_does_not_zero_long_yes_mark(tmp_path: Path) -> None:
+    """An unusable bid=0/ask=1 book must preserve the prior long-YES mark."""
+    st = Storage(tmp_path / "t.duckdb")
+    pos = _open_position(avg_entry_price=0.50, net_qty=50.0)
+    pos = pos.model_copy(update={"direction": "yes", "mark_price": 0.55, "unrealized_pnl": 2.50})
+    st.insert_positions([pos])
+
+    mark = PositionMark(
+        contract_id="CPI-TEST",
+        venue="KALSHI",
+        mark_price=0.0,
+        yes_bid=0.0,
+        yes_ask=1.0,
+        quote_reliable=False,
+    )
+    updated = st.mark_open_positions([mark])
+    st.close()
+
+    assert updated == 0
+    con = duckdb.connect(str(tmp_path / "t.duckdb"))
+    row = con.execute(
+        "SELECT mark_price, unrealized_pnl FROM paper_positions WHERE position_id = ?",
+        [pos.position_id],
+    ).fetchone()
+    con.close()
+
+    assert row is not None
+    assert abs(row[0] - 0.55) < 1e-9
+    assert abs(row[1] - 2.50) < 1e-9
+
+
 def test_mark_no_matching_open_positions_returns_zero(tmp_path: Path) -> None:
     """mark_open_positions returns 0 when no open rows match the contract."""
     st = Storage(tmp_path / "t.duckdb")

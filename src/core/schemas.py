@@ -91,7 +91,7 @@ class PositionMark(BaseModel):
 
     contract_id: str
     venue: str
-    mark_price: float
+    mark_price: float | None
     last_mark_time_utc: datetime = Field(default_factory=utc_now)
     #: When set, storage applies direction-aware marks (YES→bid, NO→ask) instead of
     #: one mid for all rows. ``mark_price`` holds fair mid for logging/fallback.
