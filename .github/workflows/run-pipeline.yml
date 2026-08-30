@@ -125,15 +125,18 @@ jobs:
         id: audit
         run: |
           mkdir -p data/reports
+          set +e
           python scripts/audit_db.py \
             --db data/pme.duckdb \
             --out data/reports/audit_latest.md \
             --json data/reports/audit_latest.json \
             --github-summary
+          AUDIT_EXIT=$?
+          set -e
           # Capture exit code but never let it fail the job — audit is
           # advisory only. Critical findings surface as a workflow warning
           # annotation in the step below.
-          echo "audit_exit=$?" >> "$GITHUB_OUTPUT"
+          echo "audit_exit=$AUDIT_EXIT" >> "$GITHUB_OUTPUT"
         continue-on-error: true
 
       - name: Annotate findings
