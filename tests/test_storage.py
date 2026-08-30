@@ -56,6 +56,42 @@ def test_mark_updates_mark_price_and_unrealized_pnl(tmp_path: Path) -> None:
     assert abs(row[1] - 5.0) < 1e-9
 
 
+def test_mark_skips_unreliable_fair_mid_for_yes_position(tmp_path: Path) -> None:
+    """Unusable books must not apply synthetic fair-mid marks to long YES rows."""
+    st = Storage(tmp_path / "t.duckdb")
+    pos = _open_position(
+        position_id="pos-empty-book",
+        contract_id="KXEMPTY",
+        venue="kalshi",
+        avg_entry_price=0.10,
+        net_qty=100.0,
+    ).model_copy(update={"direction": "yes", "mark_price": 0.10})
+    st.insert_positions([pos])
+
+    mark = PositionMark(
+        contract_id="KXEMPTY",
+        venue="kalshi",
+        mark_price=0.50,
+        yes_bid=0.0,
+        yes_ask=1.0,
+        quote_reliable=False,
+    )
+    updated = st.mark_open_positions([mark])
+    st.close()
+
+    assert updated == 0
+    con = duckdb.connect(str(tmp_path / "t.duckdb"))
+    row = con.execute(
+        "SELECT mark_price, unrealized_pnl FROM paper_positions WHERE position_id = ?",
+        [pos.position_id],
+    ).fetchone()
+    con.close()
+
+    assert row is not None
+    assert abs(row[0] - 0.10) < 1e-9
+    assert abs(row[1] - 0.0) < 1e-9
+
+
 def test_mark_does_not_update_closed_positions(tmp_path: Path) -> None:
     """Closed positions must not be re-marked."""
     st = Storage(tmp_path / "t.duckdb")

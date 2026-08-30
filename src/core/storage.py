@@ -401,10 +401,13 @@ class Storage:
                 yes_bid = float(mark.yes_bid)
                 yes_ask = float(mark.yes_ask)
                 broken_no_book = yes_bid <= 0 and yes_ask >= 0.999
-                # fair_mid is used as YES fallback when bid is 0 (e.g. near-certain contracts
-                # whose YES side is so likely that nobody posts a bid, but last_trade is still
-                # meaningful). Without this, these positions are never re-marked.
-                fair_mid = float(mark.mark_price) if mark.mark_price is not None else None
+                # Only trusted quote assessments may use a fair-mid fallback. Broken books
+                # (for example bid=0, ask=1) often carry synthetic mids that would corrupt PnL.
+                fair_mid = (
+                    float(mark.mark_price)
+                    if mark.quote_reliable and mark.mark_price is not None
+                    else None
+                )
                 rows = self.con.execute(
                     """
                     UPDATE paper_positions
