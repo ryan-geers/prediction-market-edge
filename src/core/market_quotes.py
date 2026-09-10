@@ -152,6 +152,25 @@ def assess_yes_quote(
             yes_ask_for_exit=ask,
         )
 
+    # Bid-only book with Kalshi's "no offer" sentinel (yes_ask=1.00). A live bid
+    # plus a wide spread to $1 is not a two-sided market: nobody is offering YES,
+    # so long-NO marks/exits at $1 (NO value $0) and long-YES fills at $1 are fake.
+    # Tight books at the ceiling (e.g. bid=0.99 / ask=1.00) stay two_sided above.
+    if bid >= min_bid and ask >= 1.0 - 1e-9 and sp > max_spread:
+        lt_mid = _last_trade_mid()
+        fair = lt_mid if lt_mid is not None else bid
+        return YesQuoteAssessment(
+            best_bid=bid,
+            best_ask=ask,
+            fair_yes_mid=fair,
+            spread_bps=sp,
+            quality="bid_only_pinned_ask",
+            is_signal_quality=False,
+            is_exit_quality=True,
+            yes_bid_for_exit=bid,
+            yes_ask_for_exit=fair,
+        )
+
     # Two prices present but spread too wide — fall back to last trade if sane.
     # Hard cap: above max_spread_hard (default 10,000 bps) the market is so illiquid
     # that no last_trade rescue applies; any position opened here cannot be closed at
@@ -235,6 +254,8 @@ def mark_yes_for_direction(assessment: YesQuoteAssessment, direction: str | None
             return None
         return assessment.yes_bid_for_exit
     if direction == "no":
+        if assessment.quality == "bid_only_pinned_ask":
+            return assessment.yes_ask_for_exit
         if assessment.best_ask >= 1.0 - 1e-9 and assessment.yes_bid_for_exit <= 0:
             return None
         return assessment.yes_ask_for_exit
@@ -251,7 +272,10 @@ def executable_yes_exit_price(
             return None
         return assessment.yes_bid_for_exit
     if direction == "no":
-        # NO exit mark in position price space: 1 - yes_ask
+        # NO exit mark in position price space: 1 - yes_ask.
+        # A pinned $1 ask is not an executable offer, even when a YES bid exists.
+        if assessment.quality == "bid_only_pinned_ask":
+            return None
         if assessment.best_ask >= 1.0 - 1e-9 and assessment.yes_bid_for_exit <= 0:
             return None
         return 1.0 - assessment.yes_ask_for_exit

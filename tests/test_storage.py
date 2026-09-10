@@ -225,6 +225,46 @@ def test_get_open_positions_includes_direction(tmp_path: Path) -> None:
     assert result[0].direction == "yes"
 
 
+def test_mark_long_no_does_not_use_pinned_dollar_ask(tmp_path: Path) -> None:
+    """Pipeline-style mark: pinned yes_ask=1.00 with a live bid must not wipe long NO.
+
+    Mirrors src/pipeline/run.py passing yes_ask_for_exit from assess_yes_quote.
+    Production 2026-09-10 KXCPI-26SEP-T0.2 was marked at 1.0 → unrealized -$25.
+    """
+    from src.core.config import Settings
+    from src.core.market_quotes import assess_yes_quote
+
+    st = Storage(tmp_path / "t.duckdb")
+    pos = _open_position(avg_entry_price=0.2406, net_qty=103.91)
+    pos = pos.model_copy(update={"direction": "no", "mark_price": 0.76})
+    st.insert_positions([pos])
+
+    qa = assess_yes_quote(0.74, 1.0, 0.97, Settings())
+    mark = PositionMark(
+        contract_id="CPI-TEST",
+        venue="KALSHI",
+        mark_price=qa.fair_yes_mid if qa.fair_yes_mid is not None else 0.97,
+        yes_bid=qa.best_bid,
+        yes_ask=qa.yes_ask_for_exit,
+    )
+    updated = st.mark_open_positions([mark])
+    st.close()
+    assert updated == 1
+
+    con = duckdb.connect(str(tmp_path / "t.duckdb"))
+    row = con.execute(
+        "SELECT mark_price, unrealized_pnl FROM paper_positions WHERE position_id = ?",
+        [pos.position_id],
+    ).fetchone()
+    con.close()
+    assert row is not None
+    assert abs(row[0] - 0.97) < 1e-9
+    # NO unrealized = ((1 - yes_mark) - entry) * qty = (0.03 - 0.2406) * 103.91
+    expected = ((1.0 - 0.97) - 0.2406) * 103.91
+    assert abs(row[1] - expected) < 1e-6
+    assert row[0] < 0.999
+
+
 def test_mark_updates_last_mark_time(tmp_path: Path) -> None:
     """last_mark_time_utc is updated to the mark's timestamp."""
     st = Storage(tmp_path / "t.duckdb")

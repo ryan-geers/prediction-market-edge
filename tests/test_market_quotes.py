@@ -77,3 +77,35 @@ def test_executable_yes_exit_uses_bid():
     qa = assess_yes_quote(0.48, 0.52, None, _settings())
     assert executable_yes_exit_price(qa, "yes") == 0.48
     assert executable_yes_exit_price(qa, "no") == 0.48  # 1 - 0.52
+
+
+def test_pinned_dollar_ask_with_live_bid_is_bid_only():
+    """Production 2026-09-10: KXCPI-26SEP-T0.2 bid=0.74, ask=1.00, last=0.97.
+
+    Kalshi reports yes_ask=1.00 when no one is offering YES. Treating that as a
+    real ask marked long NO at $1 (NO value $0) and allowed YES fills at $1.
+    """
+    qa = assess_yes_quote(0.74, 1.0, 0.97, _settings())
+    assert qa.quality == "bid_only_pinned_ask"
+    assert qa.fair_yes_mid == 0.97
+    assert qa.yes_ask_for_exit == 0.97
+    assert not qa.is_signal_quality
+    assert qa.is_exit_quality
+    assert executable_yes_exit_price(qa, "yes") == 0.74
+    assert executable_yes_exit_price(qa, "no") is None
+
+
+def test_pinned_dollar_ask_without_last_trade_uses_bid():
+    qa = assess_yes_quote(0.74, 1.0, None, _settings())
+    assert qa.quality == "bid_only_pinned_ask"
+    assert qa.fair_yes_mid == 0.74
+    assert qa.yes_ask_for_exit == 0.74
+    assert not qa.is_signal_quality
+
+
+def test_tight_ceiling_book_still_two_sided():
+    """bid=0.99 / ask=1.00 is a real near-certain YES book, not a missing ask."""
+    qa = assess_yes_quote(0.99, 1.0, 0.995, _settings())
+    assert qa.quality == "two_sided"
+    assert qa.is_signal_quality
+    assert executable_yes_exit_price(qa, "no") == 0.0
