@@ -99,3 +99,46 @@ def test_signal_block_long_no_when_model_favors_yes(tmp_path: Path) -> None:
     assert len(signals) == 1
     assert signals[0].decision == "hold"
     assert "blocked_by_no_fade_policy" in signals[0].decision_reason
+
+
+def test_pinned_dollar_ask_holds_signals(tmp_path: Path) -> None:
+    """Wide bid-only books with yes_ask=1.00 must not emit enter_long_yes/no."""
+    settings = Settings(
+        duckdb_path=tmp_path / "db.duckdb",
+        data_dir=tmp_path,
+        edge_threshold_bps=300,
+    )
+    thesis = EconomicIndicatorsThesis(settings)
+    fc = {
+        "market": [
+            {
+                "venue": "kalshi",
+                "contract_id": "KXCPI-26SEP-T0.2",
+                "label": "Sep CPI T0.2",
+                "best_bid": 0.74,
+                "best_ask": 1.0,
+                "last_trade": 0.97,
+                "contract_type": "cpi",
+                "threshold": 0.2,
+                "is_stub": False,
+            }
+        ],
+        "model_probability": 0.91,
+        "predicted_cpi_mom_pct": 0.3942,
+        "cpi_mom_threshold_pct": 0.3,
+        "validation_rmse": 0.26,
+        "walk_forward_val_rmse": 0.26,
+        "macro_history_count": 100,
+        "model_healthy": True,
+        "un_reg": None,
+        "un_healthy": False,
+    }
+    signals, snaps = thesis.generate_signals("r-pinned-ask", fc)
+    assert len(signals) == 1
+    assert signals[0].decision == "hold"
+    assert "quote_unusable" in signals[0].decision_reason
+    assert "bid_only_pinned_ask" in signals[0].decision_reason
+    orders, positions = thesis.paper_trade(signals)
+    assert orders == []
+    assert positions == []
+    assert snaps[0].mid_price == 0.97

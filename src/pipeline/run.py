@@ -69,7 +69,7 @@ def run_pipeline(thesis_name: str = "economic_indicators") -> tuple[str, Path | 
                 venue=snap.venue,
                 mark_price=qa.fair_yes_mid if qa.fair_yes_mid is not None else snap.mid_price,
                 yes_bid=qa.best_bid,
-                yes_ask=qa.best_ask,
+                yes_ask=qa.yes_ask_for_exit,
                 quote_reliable=qa.is_exit_quality or qa.fair_yes_mid is not None,
             )
         )
