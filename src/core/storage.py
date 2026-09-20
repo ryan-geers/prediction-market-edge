@@ -400,7 +400,14 @@ class Storage:
             if mark.yes_bid is not None and mark.yes_ask is not None:
                 yes_bid = float(mark.yes_bid)
                 yes_ask = float(mark.yes_ask)
-                broken_no_book = yes_bid <= 0 and yes_ask >= 0.999
+                # Bidless placeholder asks (Kalshi empty book) are classified as
+                # unusable_empty_book when ask > market_max_one_sided_ask (0.85),
+                # not only when ask is pinned at $1. Honoring quote_reliable also
+                # skips extreme-spread books whose ask would wipe long NO to ~$0.
+                broken_no_book = (
+                    (yes_bid < min_bid and yes_ask > 0.85)
+                    or (not bool(mark.quote_reliable))
+                )
                 # fair_mid is used as YES fallback when bid is 0 (e.g. near-certain contracts
                 # whose YES side is so likely that nobody posts a bid, but last_trade is still
                 # meaningful). Without this, these positions are never re-marked.
