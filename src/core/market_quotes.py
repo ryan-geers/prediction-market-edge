@@ -223,6 +223,16 @@ def assess_yes_quote(
     )
 
 
+def _broken_empty_no_book(assessment: YesQuoteAssessment) -> bool:
+    """True when a bidless placeholder ask would wipe a long-NO mark/exit."""
+    if assessment.yes_bid_for_exit > 0:
+        return False
+    # unusable_empty_book covers bid=0 with ask in (max_one_sided_ask, 1.0], not just $1.
+    if assessment.quality == "unusable_empty_book":
+        return True
+    return assessment.best_ask >= 1.0 - 1e-9
+
+
 def mark_yes_for_direction(assessment: YesQuoteAssessment, direction: str | None) -> float | None:
     """
     Direction-aware YES mark stored in ``paper_positions.mark_price``.
@@ -235,7 +245,7 @@ def mark_yes_for_direction(assessment: YesQuoteAssessment, direction: str | None
             return None
         return assessment.yes_bid_for_exit
     if direction == "no":
-        if assessment.best_ask >= 1.0 - 1e-9 and assessment.yes_bid_for_exit <= 0:
+        if _broken_empty_no_book(assessment):
             return None
         return assessment.yes_ask_for_exit
     return assessment.fair_yes_mid
@@ -252,7 +262,7 @@ def executable_yes_exit_price(
         return assessment.yes_bid_for_exit
     if direction == "no":
         # NO exit mark in position price space: 1 - yes_ask
-        if assessment.best_ask >= 1.0 - 1e-9 and assessment.yes_bid_for_exit <= 0:
+        if _broken_empty_no_book(assessment):
             return None
         return 1.0 - assessment.yes_ask_for_exit
     return None

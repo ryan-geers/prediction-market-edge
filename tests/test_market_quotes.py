@@ -4,6 +4,7 @@ from src.core.config import Settings
 from src.core.market_quotes import (
     assess_yes_quote,
     executable_yes_exit_price,
+    mark_yes_for_direction,
 )
 
 
@@ -33,6 +34,23 @@ def test_empty_book_bid_zero_ask_one_is_unusable():
     assert not qa.is_signal_quality
     assert not qa.is_exit_quality
     assert executable_yes_exit_price(qa, "yes") is None
+    assert executable_yes_exit_price(qa, "no") is None
+    assert mark_yes_for_direction(qa, "no") is None
+
+
+def test_empty_book_placeholder_ask_below_one_does_not_wipe_no():
+    """Production 2026-09-19: bid=0, ask=0.95 is still an empty book, not a $0.05 NO bid.
+
+    Storage previously only skipped ask>=0.999, so long-NO rows were re-marked at 0.95
+    (NO value 0.05) — nearly a full $25 wipe — then frozen when the ask later pinned at $1.
+    """
+    qa = assess_yes_quote(0.0, 0.95, 0.05, _settings())
+    assert qa.quality == "unusable_empty_book"
+    assert qa.fair_yes_mid is None
+    assert not qa.is_exit_quality
+    assert executable_yes_exit_price(qa, "no") is None
+    assert mark_yes_for_direction(qa, "no") is None
+    assert mark_yes_for_direction(qa, "yes") is None
 
 
 def test_one_sided_low_ask_blocked_by_hard_cap():
