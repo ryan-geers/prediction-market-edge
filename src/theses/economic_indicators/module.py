@@ -113,6 +113,13 @@ class EconomicIndicatorsThesis(ThesisModule):
         _CPI_PRED_MIN, _CPI_PRED_MAX = -0.5, 2.5
         prediction_in_range = _CPI_PRED_MIN <= cpi_reg.prediction <= _CPI_PRED_MAX
         cpi_healthy = cpi_val_rmse >= 1e-6 and abs(cpi_reg.prediction) > 1e-6 and prediction_in_range
+        # A BEA outage (or missing key) substitutes a stub PCEPI path. That stub
+        # still produces an in-range m/m prediction — on 2026-10-04 a 503 collapsed
+        # history 27679 → 3181 rows and moved the forecast 0.41 → 0.96, which
+        # signal-flipped open long-NO CPI positions. Hold CPI until real history returns.
+        bea_history_fallback = bool(getattr(self.bea, "history_is_fallback", False))
+        if bea_history_fallback:
+            cpi_healthy = False
         # Forecast-record health: additionally require that the global reference
         # probability (against the 0.3% threshold) is not stuck at the min/max clamp.
         # When the OLS extrapolates to an extreme prediction the probability hits exactly
@@ -123,11 +130,12 @@ class EconomicIndicatorsThesis(ThesisModule):
             LOGGER.warning(
                 "CPI model health check failed — blocking CPI signals. "
                 "val_rmse=%.2e, prediction=%.6f (allowed range [%.1f, %.1f]). "
-                "Check that training frame is monthly and has non-zero CPI targets.",
+                "Check that training frame is monthly and has non-zero CPI targets.%s",
                 cpi_val_rmse,
                 cpi_reg.prediction,
                 _CPI_PRED_MIN,
                 _CPI_PRED_MAX,
+                " BEA PCEPI history is a synthetic fallback." if bea_history_fallback else "",
             )
 
         # --- Unemployment model ---

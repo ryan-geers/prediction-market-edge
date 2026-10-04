@@ -98,3 +98,29 @@ def test_mom_to_probability_monotonic():
     p_low = mom_percent_to_yes_probability(0.1, threshold_pct=0.3, scale=12.0)
     p_high = mom_percent_to_yes_probability(0.5, threshold_pct=0.3, scale=12.0)
     assert 0.01 <= p_low < p_high <= 0.99
+
+
+def test_bea_exception_stub_truncates_cpi_training_window():
+    """The HTTP-failure PCEPI stub drops every month before its first point.
+
+    That is the 2026-10-04 path: two points (2025-01=121.9, 2026-03=123.4)
+    cut a multi-year FRED frame down to the stub's span.
+    """
+    rows: list[dict] = []
+    for i in range(36):
+        year = 2023 + (i // 12)
+        month = (i % 12) + 1
+        d = f"{year:04d}-{month:02d}-01"
+        rows.append({"series": "PPIACO", "value": 240.0 + i * 0.3, "date": d})
+        rows.append({"series": "UNRATE", "value": 4.0, "date": d})
+        rows.append({"series": "CPIAUCSL", "value": 300.0 + i * 0.4, "date": d})
+        rows.append({"series": "PCEPI", "value": 120.0 + i * 0.2, "date": d})
+    full = build_training_frame_from_history(rows, {"PPIACO": 250.0, "PCEPI": 127.0, "UNRATE": 4.0})
+    stubbed = [r for r in rows if r["series"] != "PCEPI"] + [
+        {"series": "PCEPI", "value": 121.9, "date": "2025-01-01"},
+        {"series": "PCEPI", "value": 123.4, "date": "2026-03-01"},
+    ]
+    short = build_training_frame_from_history(stubbed, {"PPIACO": 250.0, "PCEPI": 123.4, "UNRATE": 4.0})
+    assert len(full) >= 30
+    assert len(short) < 20
+    assert short["release_date"].min() >= full["release_date"].min()

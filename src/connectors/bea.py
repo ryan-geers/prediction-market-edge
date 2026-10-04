@@ -12,6 +12,11 @@ class BeaConnector(Connector):
     def __init__(self, api_key: str | None = None) -> None:
         super().__init__()
         self.api_key = api_key
+        # True when fetch_history() returned synthetic PCEPI instead of the BEA table.
+        # The CPI thesis must not trade on that series: the exception stub is two
+        # points (121.9 in 2025-01, 123.4 in 2026-03) and dropna() then throws away
+        # every earlier month of real FRED history.
+        self.history_is_fallback = False
 
     def fetch(self) -> list[dict[str, Any]]:
         if not self.api_key:
@@ -42,6 +47,7 @@ class BeaConnector(Connector):
             # ~10 years of quarterly PCEPI levels so build_training_frame_from_history
             # has enough non-NaN rows to satisfy the ≥ 8 training-row requirement
             # without falling back to the fully synthetic training frame.
+            self.history_is_fallback = True
             return [
                 {"series": "PCEPI", "value": 104.2, "date": "2016-01-01"},
                 {"series": "PCEPI", "value": 104.9, "date": "2016-04-01"},
@@ -98,9 +104,11 @@ class BeaConnector(Connector):
         }
         try:
             data = self.http_client.get_json(self.BASE_URL, params=params)
+            self.history_is_fallback = False
             return self.parse_history_response(data)
         except Exception as exc:
             LOGGER.warning("BEA historical fetch failed, using fallback history: %s", exc)
+            self.history_is_fallback = True
             return [
                 {"series": "PCEPI", "value": 121.9, "date": "2025-01-01"},
                 {"series": "PCEPI", "value": 123.4, "date": "2026-03-01"},

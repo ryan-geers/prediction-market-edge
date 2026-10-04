@@ -36,6 +36,42 @@ def test_bea_fallback_without_api_key():
     assert rows[0]["series"] == "PCEPI"
 
 
+def test_bea_history_without_key_is_fallback():
+    connector = BeaConnector(api_key=None)
+    rows = connector.fetch_history()
+    assert connector.history_is_fallback is True
+    assert len(rows) > 2
+    assert rows[-1]["value"] == pytest.approx(123.4)
+
+
+def test_bea_history_http_failure_marks_fallback():
+    """A BEA 503 must not look like a successful history fetch."""
+    connector = BeaConnector(api_key="test-key")
+    connector.http_client.get_json = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("503"))  # type: ignore[method-assign]
+    rows = connector.fetch_history()
+    assert connector.history_is_fallback is True
+    assert [r["date"] for r in rows] == ["2025-01-01", "2026-03-01"]
+    assert rows[-1]["value"] == pytest.approx(123.4)
+
+
+def test_bea_history_success_clears_fallback():
+    connector = BeaConnector(api_key="test-key")
+    connector.history_is_fallback = True
+    connector.http_client.get_json = lambda *_a, **_k: {  # type: ignore[method-assign]
+        "BEAAPI": {
+            "Results": {
+                "Data": [
+                    {"DataValue": "120.1", "TimePeriod": "2024M01"},
+                    {"DataValue": "121.0", "TimePeriod": "2024M02"},
+                ]
+            }
+        }
+    }
+    rows = connector.fetch_history()
+    assert connector.history_is_fallback is False
+    assert len(rows) == 2
+
+
 def test_kalshi_normalization():
     connector = KalshiConnector()
     row = connector._normalize_market({"ticker": "KXU3-26MAY-T4.8", "title": "X", "yes_bid": 40, "yes_ask": 45, "last_price": 43}, series_ticker="KXU3")
