@@ -140,10 +140,15 @@ def apply_exits(
                 if flip_yes or flip_no:
                     _reason = sig.decision_reason or ""
                     try:
-                        _unusable = json.loads(_reason).get("quote_unusable", False)
+                        _parsed_reason = json.loads(_reason)
+                        _unusable = bool(_parsed_reason.get("quote_unusable", False))
+                        _blocked_health = bool(_parsed_reason.get("blocked_by_health_gate", False))
                     except (json.JSONDecodeError, AttributeError):
                         _unusable = "quote_unusable=true" in _reason
-                    if _unusable:
+                        _blocked_health = "blocked_by_health_gate" in _reason
+                    # Unhealthy models still publish a large edge. Acting on it
+                    # closes live positions during a data outage (BEA 503 stub).
+                    if _unusable or _blocked_health:
                         continue
                     qa = _quote_assessment(snap_by_contract.get(key), sig, settings)
                     if qa is None:

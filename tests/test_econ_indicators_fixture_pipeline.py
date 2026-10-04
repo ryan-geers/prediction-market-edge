@@ -63,6 +63,52 @@ def test_econ_pipeline_fixture_chain(monkeypatch: pytest.MonkeyPatch, econ_thesi
     assert isinstance(pos, list)
 
 
+def test_bea_history_fallback_blocks_cpi_entries_and_keeps_unemployment(tmp_path: Path) -> None:
+    """Synthetic PCEPI must not emit CPI entries. Unemployment does not use PCEPI."""
+    settings = Settings(
+        duckdb_path=tmp_path / "db.duckdb",
+        data_dir=tmp_path,
+        edge_threshold_bps=300,
+        signal_block_long_no_when_model_favors_yes=False,
+    )
+    thesis = EconomicIndicatorsThesis(settings)
+    thesis.bea.history_is_fallback = True
+    raw = _fixture_ingest_payload()
+    raw["market"] = [
+        {
+            "venue": "KALSHI",
+            "contract_id": "KXCPI-26SEP-T0.4",
+            "label": "CPI",
+            "best_bid": 0.90,
+            "best_ask": 0.91,
+            "last_trade": 0.90,
+            "contract_type": "cpi",
+            "threshold": 0.4,
+            "is_stub": False,
+        },
+        {
+            "venue": "KALSHI",
+            "contract_id": "KXU3-26OCT-T4.5",
+            "label": "U3",
+            "best_bid": 0.40,
+            "best_ask": 0.42,
+            "last_trade": 0.41,
+            "contract_type": "unemployment",
+            "threshold": 4.5,
+            "is_stub": False,
+        },
+    ]
+    fc = thesis.forecast(thesis.build_features(raw))
+    assert fc["model_healthy"] is False
+    signals, _ = thesis.generate_signals("bea-fallback", fc)
+    by_id = {s.contract_id: s for s in signals}
+    cpi = by_id["KXCPI-26SEP-T0.4"]
+    assert cpi.decision == "hold"
+    assert "blocked_by_health_gate" in cpi.decision_reason
+    unemp = by_id["KXU3-26OCT-T4.5"]
+    assert "blocked_by_health_gate" not in unemp.decision_reason
+
+
 def test_signal_block_long_no_when_model_favors_yes(tmp_path: Path) -> None:
     """Suppress long NO when model P(YES) > 50% (avoid fading a YES modal outcome)."""
     settings = Settings(

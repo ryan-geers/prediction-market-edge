@@ -171,6 +171,27 @@ def test_apply_exits_flip_closes_yes_position_on_no_signal():
     assert abs(closes[0].avg_exit_price - 0.29) < 1e-9
 
 
+def test_apply_exits_skips_flip_when_model_health_gate_blocks():
+    """A stub forecast can print a huge edge while the health gate holds.
+
+    Exits must follow the gate. Otherwise a BEA outage signal-flips open NO
+    positions even though new entries are blocked.
+    """
+    settings = Settings(edge_threshold_bps=300, paper_exit_on_flip=True)
+    pos = _open_position(direction="no", avg_entry_price=0.30, net_qty=80.0)
+    held = _base_signal().model_copy(
+        update={
+            "decision": "hold",
+            "edge_bps": 850.0,
+            "market_implied_probability": 0.90,
+            "model_probability": 0.99,
+            "decision_reason": '{"blocked_by_health_gate":true,"model_healthy":false}',
+        }
+    )
+    snap = _snapshot(mid_price=0.90)
+    assert apply_exits([pos], [held], [snap], settings) == []
+
+
 def test_apply_exits_flip_closes_no_position_on_yes_signal():
     """Rule A: NO position is closed when the current signal flips to YES."""
     settings = Settings(edge_threshold_bps=300, paper_exit_on_flip=True)
