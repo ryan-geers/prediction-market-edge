@@ -170,7 +170,12 @@ def assess_yes_quote(
                 yes_ask_for_exit=ask,
             )
         lt_mid = _last_trade_mid()
-        if lt_mid is not None:
+        # The print has to lie inside the posted book. A last trade outside
+        # the bid/ask is stale relative to live liquidity and must not be the
+        # fair value: KXECONSTATU3-26NOV-T4.2 quoted 0.21/0.30 with last 0.89
+        # (zero 24h volume), and treating 0.89 as YES fair flipped a long YES
+        # into a long NO filled at the NO ask (~0.79).
+        if lt_mid is not None and (bid - 1e-9) <= lt_mid <= (ask + 1e-9):
             exit_ok = bid >= min_bid
             return YesQuoteAssessment(
                 best_bid=bid,
