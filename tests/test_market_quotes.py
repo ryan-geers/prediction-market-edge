@@ -77,3 +77,36 @@ def test_executable_yes_exit_uses_bid():
     qa = assess_yes_quote(0.48, 0.52, None, _settings())
     assert executable_yes_exit_price(qa, "yes") == 0.48
     assert executable_yes_exit_price(qa, "no") == 0.48  # 1 - 0.52
+
+
+def test_wide_spread_ignores_last_trade_outside_book():
+    """Stale last outside the live touch must not become fair value.
+
+    Production case: KXECONSTATU3-26NOV-T4.2 bid 0.21 / ask 0.30 / last 0.89.
+    Spread is wide but under the hard cap, so the old path adopted 0.89 and
+    the edge sign flipped versus the 0.21–0.30 book.
+    """
+    qa = assess_yes_quote(0.21, 0.30, 0.89, _settings())
+    assert qa.quality == "unusable_wide_spread"
+    assert qa.fair_yes_mid is None
+    assert not qa.is_signal_quality
+    assert not qa.is_exit_quality
+    assert executable_yes_exit_price(qa, "yes") is None
+    # Touch is still available for marking an existing position.
+    assert qa.yes_bid_for_exit == 0.21
+    assert qa.yes_ask_for_exit == 0.30
+
+
+def test_wide_spread_uses_last_trade_inside_book():
+    """A print inside a wide (but not extreme) book remains a valid fair value."""
+    qa = assess_yes_quote(0.40, 0.55, 0.48, _settings())
+    assert qa.quality == "last_trade_wide_spread"
+    assert qa.fair_yes_mid == 0.48
+    assert qa.is_signal_quality
+    assert qa.is_exit_quality
+
+
+def test_wide_spread_accepts_last_trade_at_the_touch():
+    qa = assess_yes_quote(0.40, 0.55, 0.55, _settings())
+    assert qa.quality == "last_trade_wide_spread"
+    assert qa.fair_yes_mid == 0.55

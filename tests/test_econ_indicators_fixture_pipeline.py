@@ -63,6 +63,69 @@ def test_econ_pipeline_fixture_chain(monkeypatch: pytest.MonkeyPatch, econ_thesi
     assert isinstance(pos, list)
 
 
+def test_stale_last_outside_book_does_not_flip_to_long_no(tmp_path: Path) -> None:
+    """A last trade outside the posted book must not open the opposite side.
+
+    Mirrors KXECONSTATU3-26NOV-T4.2 on 2026-10-29: YES 0.21/0.30, last 0.89,
+    model P(YES) ≈ 0.45. Using 0.89 as fair value emits enter_long_no and
+    closes an existing long YES. The live touch still prices YES below the model.
+    """
+    from datetime import datetime, timezone
+
+    from src.theses.economic_indicators.unemployment_model import UnrateRegressionResult
+
+    settings = Settings(
+        duckdb_path=tmp_path / "db.duckdb",
+        data_dir=tmp_path,
+        edge_threshold_bps=300,
+        signal_block_long_no_when_model_favors_yes=False,
+    )
+    thesis = EconomicIndicatorsThesis(settings)
+    now = datetime.now(timezone.utc)
+    un_reg = UnrateRegressionResult(
+        prediction=4.192,
+        rmse=0.1151,
+        mae=0.09,
+        train_rmse=0.1,
+        train_mae=0.08,
+        walk_forward_val_rmse=0.1121,
+        walk_forward_val_mae=0.09,
+        n_train=100,
+        n_val=20,
+        training_start=now,
+        training_end=now,
+    )
+    fc = {
+        "market": [
+            {
+                "venue": "kalshi",
+                "contract_id": "KXECONSTATU3-26NOV-T4.2",
+                "label": "Unemployment exactly 4.2%",
+                "best_bid": 0.21,
+                "best_ask": 0.30,
+                "last_trade": 0.89,
+                "contract_type": "unemployment",
+                "threshold": 4.2,
+                "is_stub": False,
+            }
+        ],
+        "model_healthy": True,
+        "un_reg": un_reg,
+        "un_healthy": True,
+        "macro_history_count": 27680,
+    }
+    signals, snaps = thesis.generate_signals("r-stale-last", fc)
+    assert len(signals) == 1
+    sig = signals[0]
+    assert sig.decision == "hold"
+    assert sig.edge_bps == 0.0
+    assert "quote_unusable" in sig.decision_reason
+    assert "unusable_wide_spread" in sig.decision_reason
+    assert snaps[0].best_bid == 0.21
+    assert snaps[0].best_ask == 0.30
+    assert snaps[0].last_trade == 0.89
+
+
 def test_signal_block_long_no_when_model_favors_yes(tmp_path: Path) -> None:
     """Suppress long NO when model P(YES) > 50% (avoid fading a YES modal outcome)."""
     settings = Settings(
